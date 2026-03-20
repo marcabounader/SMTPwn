@@ -169,11 +169,14 @@ def check_vrfy(s, user, verbose):
 
 
 def check_rcpt(s, user, domain, verbose):
-    """RCPT TO check. Appends @domain if domain is provided."""
+    """RCPT TO check. Appends @domain if domain is provided.
+    Strips any existing @domain from user first to avoid doubling."""
     reset_mail_state(s, verbose)
     rcpt_domain = domain if domain else "pentest.local"
     send_cmd(s, f"MAIL FROM: <pentest@{rcpt_domain}>\r\n", verbose)
-    rcpt_addr = f"{user}@{domain}" if domain else user
+    # Strip existing @domain suffix if present (e.g. from garbage user generation)
+    clean_user = user.split("@")[0]
+    rcpt_addr = f"{clean_user}@{domain}" if domain else clean_user
     res = send_cmd(s, f"RCPT TO: <{rcpt_addr}>\r\n", verbose)
     reset_mail_state(s, verbose)
     if res.startswith("250"):
@@ -185,6 +188,8 @@ def check_expn(s, user, verbose):
     res = send_cmd(s, f"EXPN {user}\r\n", verbose)
     if res.startswith("250"):
         return "valid"
+    if res.startswith("500") or res.startswith("502"):
+        return "disabled"
     return "invalid"
 
 
@@ -245,15 +250,17 @@ def preflight_check(target, port, domain, method, timeout, verbose):
             status = "\033[91m✗ catch-all / unreliable\033[0m"
         elif res == "potential":
             status = "\033[93m~ ambiguous (252)\033[0m"
+        elif res == "disabled":
+            status = "\033[90m✗ disabled / not supported\033[0m"
         else:
-            status = "\033[91m✗ error / disabled\033[0m"
+            status = "\033[91m✗ error\033[0m"
         marker = "  ◄ selected" if m == method else ""
         print(f"    {m:<6} : {status}{marker}")
 
     current_result = results.get(method, "error")
     if current_result != "invalid":
         print(f"\n[!] WARNING: selected method {method} may produce unreliable results.")
-        reliable = [m for m, r in results.items() if r == "invalid"]
+        reliable = [m for m, r in results.items() if r == "invalid"]  # only truly reliable methods
         if reliable:
             suggestion = reliable[0]
             choice = input(f"[?] Switch to {suggestion} (more reliable)? [y/n] (default: y): ").strip().lower()
