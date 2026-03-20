@@ -23,7 +23,7 @@
 
 Demo
 
-![SMTPwn Demo](https://img.youtube.com/vi/9zI-TxMJvuE/0.jpg)
+[![SMTPwn Demo](https://img.youtube.com/vi/9zI-TxMJvuE/0.jpg)](https://www.youtube.com/watch?v=9zI-TxMJvuE)
 
 > Watch SMTPwn in action: MTA fingerprinting, pre-flight checks, and live SMTP user enumeration.
 
