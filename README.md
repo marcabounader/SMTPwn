@@ -57,23 +57,23 @@ Flag	Description	Default
 Examples
 Enumerate users from a wordlist using RCPT (default):
 ```bash
-python3 smtp\\\_enum.py -t 10.10.10.10 -d target.htb -w /usr/share/wordlists/usernames.txt
+python3 smtp\\\_enum.py -t 10.10.10.10 -d target.com -w /usr/share/wordlists/usernames.txt
 ```
 Minimum false positives — require both VRFY and RCPT to pass:
 ```bash
-python3 smtp\\\_enum.py -t 10.10.10.10 -d target.htb -w users.txt -m BOTH
+python3 smtp\\\_enum.py -t 10.10.10.10 -d target.com -w users.txt -m BOTH
 ```
 Quick single-user check with full SMTP traffic:
 ```bash
-python3 smtp\\\_enum.py -t 10.10.10.10 -d target.htb -u admin -v
+python3 smtp\\\_enum.py -t 10.10.10.10 -d target.com -u admin -v
 ```
 Slow scan to avoid detection — 1 user per connection, 2s delay:
 ```bash
-python3 smtp\\\_enum.py -t 10.10.10.10 -d target.htb -w users.txt -b 1 --delay 2
+python3 smtp\\\_enum.py -t 10.10.10.10 -d target.com -w users.txt -b 1 --delay 2
 ```
 Non-standard port:
 ```bash
-python3 smtp\\\_enum.py -t 10.10.10.10 -p 587 -d target.htb -w users.txt
+python3 smtp\\\_enum.py -t 10.10.10.10 -p 587 -d target.com -w users.txt
 ```
 ---
 Method Guide
@@ -101,7 +101,7 @@ Sample Output
 ```
 \\\[\\\*] Target  : 10.10.10.10:25
 \\\[\\\*] Method  : RCPT
-\\\[\\\*] Domain  : target.htb
+\\\[\\\*] Domain  : target.com
 \\\[\\\*] Users   : 1542
 \\\[\\\*] Output  : valid\\\_users.txt
 
@@ -117,7 +117,7 @@ Sample Output
 \\\[\\\*] Results saved to: valid\\\_users.txt
 ```
 ---
-Recommended Wordlists For Practice
+Recommended Wordlists
 `/usr/share/seclists/Usernames/top-usernames-shortlist.txt`
 `/usr/share/seclists/Usernames/Names/names.txt`
 `/usr/share/wordlists/metasploit/unix\\\_users.txt`
