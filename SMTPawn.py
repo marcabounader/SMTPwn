@@ -1084,7 +1084,6 @@ def main():
             args.starttls      = session.get("starttls", args.starttls)
             args.no_starttls   = session.get("no_starttls", args.no_starttls)
             args.auth_user     = session.get("auth_user", args.auth_user)
-            args.verbose       = session.get("verbose", args.verbose)
             args.wordlist      = session.get("wordlist", args.wordlist)
             mta_profile = session.get("mta_profile", MTA_DEFAULT_PROFILE)
             # Restore scan state variables
@@ -1414,7 +1413,6 @@ def main():
         "no_starttls":   args.no_starttls,
         "auth_user":     args.auth_user,
         "wordlist":      args.wordlist,
-        "verbose":       args.verbose,
         "mta_profile":   mta_profile,
         "fp_banner": fp_banner,
         "ehlo_caps": ehlo_caps,
