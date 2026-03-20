@@ -80,27 +80,27 @@ python3 smtp_enum.py -t <TARGET> -d <DOMAIN> [options]
 
 Enumerate users from a wordlist using RCPT (default):
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -d target.htb -w /usr/share/wordlists/usernames.txt
+python3 smtp_enum.py -t 10.10.10.10 -d target.com -w /usr/share/wordlists/usernames.txt
 ```
 
 Minimum false positives — require both VRFY and RCPT to pass:
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -d target.htb -w users.txt -m BOTH
+python3 smtp_enum.py -t 10.10.10.10 -d target.com -w users.txt -m BOTH
 ```
 
 Quick single-user check with full SMTP traffic:
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -d target.htb -u admin -v
+python3 smtp_enum.py -t 10.10.10.10 -d target.com -u admin -v
 ```
 
 Slow scan to avoid detection — 1 user per connection, 2s delay:
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -d target.htb -w users.txt -b 1 --delay 2
+python3 smtp_enum.py -t 10.10.10.10 -d target.com -w users.txt -b 1 --delay 2
 ```
 
 Non-standard port:
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -p 587 -d target.htb -w users.txt
+python3 smtp_enum.py -t 10.10.10.10 -p 587 -d target.com -w users.txt
 ```
 
 ---
@@ -141,7 +141,7 @@ If it correctly rejects the garbage user:
 ```
 [*] Target  : 10.10.10.10:25
 [*] Method  : RCPT
-[*] Domain  : target.htb
+[*] Domain  : target.com
 [*] Users   : 1542
 [*] Output  : valid_users.txt
 
