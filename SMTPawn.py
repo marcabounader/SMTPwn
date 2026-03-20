@@ -9,6 +9,8 @@ import string
 import json
 import csv
 import os
+import threading
+import queue
 from itertools import combinations
 
 # ─────────────────────────────────────────────────────────
@@ -231,6 +233,8 @@ def get_args():
     parser.add_argument("--rcpt-domain",      default=None,                  help="Domain to append in RCPT TO (e.g. target.com). Use 'none' for plain username.")
     parser.add_argument("--force",            action="store_true",           help="Proceed without prompts even if method is unreliable or EHLO fails")
     parser.add_argument("--no-method-switch", action="store_true",           help="Never suggest switching methods after pre-flight — keep selected method")
+    parser.add_argument("--threads",          type=int, default=1, metavar="N",
+                        help="Number of parallel threads (default: 1). Higher = faster but noisier. Use with care on real targets.")
     parser.add_argument("--no-preflight",     action="store_true",           help="Skip pre-flight check entirely")
     parser.add_argument("--preflight-mode",   choices=["selected", "all"], default="all",
                         help="Pre-flight scope: 'selected' or 'all' methods (default: all)")
@@ -1010,7 +1014,12 @@ def main():
     if "--delay"   not in cli: args.delay   = tmpl["delay"]
     if "--timeout" not in cli: args.timeout = tmpl["timeout"]
     if "--batch"   not in cli and "-b" not in cli: args.batch = tmpl["batch"]
-    print(f"[*] Timing   : T{args.timing} {tmpl['name']} — delay={args.delay}s  timeout={args.timeout}s  batch={args.batch}")
+    effective = args.batch * args.threads if args.threads > 1 else args.batch
+    concurrency_note = f"  (effective {effective} users/cycle across {args.threads} threads)" if args.threads > 1 else ""
+    print(f"[*] Timing   : T{args.timing} {tmpl['name']} — delay={args.delay}s  timeout={args.timeout}s  batch={args.batch}{concurrency_note}")
+    # Warn if threads × batch is very high — likely to trigger rate limits
+    if args.threads * args.batch >= 50:
+        print(f"  {YELLOW}[!] High concurrency ({args.threads} threads × batch {args.batch}) — may trigger rate limits on strict servers{RESET}")
 
     # ── Parse methods ──────────────────────────────────────────────────────────
     methods = parse_methods(args.method)
@@ -1259,116 +1268,153 @@ def main():
     time.sleep(3)
 
     # ── Scan ───────────────────────────────────────────────────────────────────
-    valid_count     = 0
+    num_threads   = max(1, args.threads)
+    valid_count   = 0
     potential_count = 0
-    current_index   = start_index
-    max_retries     = 3
-    retry_count     = 0
-    current_delay      = args.delay  # may be auto-increased on rate limit
-    consecutive_ok     = 0            # track successes to recover delay
 
-    while current_index < total:
-        s, _ = connect_and_init(
-            args.target, args.port, domain, args.timeout, args.verbose,
-            args.starttls, args.no_starttls, args.auth_user, args.auth_pass
-        )
-        if not s:
-            retry_count += 1
-            if retry_count >= max_retries:
-                print(f"[!] Failed to connect after {max_retries} attempts.")
-                save_checkpoint(current_index, total, args.target)
-                print(f"[*] Checkpoint saved at user {current_index + 1}. Re-run with --resume.")
-                sys.exit(1)
-            print(f"[*] Could not connect — retrying in 5s … ({retry_count}/{max_retries})")
-            time.sleep(5)
-            continue
-        retry_count = 0
+    if num_threads > 1:
+        print(f"[*] Threads  : {num_threads} {YELLOW}(parallel — results may appear out of order){RESET}")
 
-        batch_end = min(current_index + args.batch, total)
+    # Thread-safe shared state
+    output_lock    = threading.Lock()   # guards file writes and counters
+    print_lock     = threading.Lock()   # guards stdout
+    user_queue     = queue.Queue()
+    counts         = {"valid": 0, "potential": 0}
+    global_delay   = [args.delay]       # mutable so threads can share rate limit state
 
-        for i in range(current_index, batch_end):
-            user     = all_users[i]
-            progress = f"[{i + 1}/{total}]"
+    # Fill the queue with users to test (skip already done via checkpoint)
+    for i in range(start_index, total):
+        user_queue.put((i, all_users[i]))
+
+    def thread_safe_print(*a, **kw):
+        with print_lock:
+            print(*a, **kw)
+
+    def worker(thread_id):
+        """Worker thread — each gets its own SMTP connection per batch."""
+        max_retries   = 3
+        retry_count   = 0
+        consecutive_ok = 0
+        current_delay  = global_delay[0]
+
+        while True:
+            # Grab a batch of users from the queue
+            batch = []
+            try:
+                while len(batch) < args.batch:
+                    batch.append(user_queue.get_nowait())
+            except queue.Empty:
+                pass
+
+            if not batch:
+                break  # no more users
+
+            # Connect
+            s, _ = connect_and_init(
+                args.target, args.port, domain, args.timeout, args.verbose,
+                args.starttls, args.no_starttls, args.auth_user, args.auth_pass
+            )
+            if not s:
+                retry_count += 1
+                if retry_count >= max_retries:
+                    thread_safe_print(f"[!] Thread {thread_id}: failed to connect after {max_retries} attempts.")
+                    # Put users back in queue for other threads
+                    for item in batch:
+                        user_queue.put(item)
+                    break
+                thread_safe_print(f"[*] Thread {thread_id}: reconnecting in 5s … ({retry_count}/{max_retries})")
+                for item in batch:
+                    user_queue.put(item)
+                time.sleep(5)
+                continue
+            retry_count = 0
+
+            for idx, user in batch:
+                progress = f"[{idx + 1}/{total}]"
+                try:
+                    result, method_results, expn_expanded = validate_user(
+                        s, methods, user, rcpt_domain, mail_from, args.verbose,
+                        mta_profile=mta_profile
+                    )
+
+                    if result == "ratelimit":
+                        with output_lock:
+                            global_delay[0] = min(global_delay[0] * 2, 10.0)
+                            current_delay   = global_delay[0]
+                        thread_safe_print(f"{YELLOW}[!] Rate limit — delay now {current_delay:.1f}s{RESET}")
+                        consecutive_ok = 0
+                        user_queue.put((idx, user))
+                        time.sleep(current_delay)
+                        break
+
+                    elif result == "valid":
+                        tag      = method_tag(method_results)
+                        expn_info = f" → {', '.join(expn_expanded)}" if expn_expanded else ""
+                        thread_safe_print(f"{progress} {GREEN}{BOLD}[+++] VALID{RESET}     : {user}{tag}{expn_info}")
+                        entry = {"username": user, "status": "valid", "methods": methods,
+                                 "method_results": method_results, "expn_expanded": expn_expanded}
+                        with output_lock:
+                            counts["valid"] += 1
+                            save_result(entry, args.output, args.output_format)
+
+                    elif result == "potential":
+                        tag         = method_tag(method_results)
+                        pot_methods = [m for m, r in method_results.items() if r == "potential"]
+                        pot_str     = f" ({', '.join(pot_methods)} returned 252)" if pot_methods else " (252)"
+                        thread_safe_print(f"{progress} {YELLOW}[?]   POTENTIAL{RESET} : {user}{tag}{pot_str}")
+                        entry = {"username": user, "status": "potential", "methods": methods,
+                                 "method_results": method_results, "expn_expanded": []}
+                        with output_lock:
+                            counts["potential"] += 1
+                            save_result(entry, args.output, args.output_format)
+
+                    elif result == "disabled":
+                        if args.verbose or args.user:
+                            thread_safe_print(f"{progress} {GRAY}[x]   DISABLED{RESET}  : EXPN not supported")
+
+                    else:
+                        if args.verbose or args.user:
+                            thread_safe_print(f"{progress} [-]   INVALID   : {user}")
+
+                    consecutive_ok += 1
+                    if consecutive_ok >= 20 and current_delay > args.delay:
+                        with output_lock:
+                            global_delay[0] = max(global_delay[0] / 2, args.delay)
+                            current_delay   = global_delay[0]
+                        thread_safe_print(f"{CYAN}[*] Delay recovered to {current_delay:.1f}s{RESET}")
+
+                    # Checkpoint every 10 users (only thread 0 to avoid collisions)
+                    if thread_id == 0 and (idx + 1) % 10 == 0:
+                        with output_lock:
+                            save_checkpoint(idx + 1, total, args.target)
+
+                    time.sleep(current_delay)
+
+                except Exception as exc:
+                    thread_safe_print(f"[!] Thread {thread_id}: dropped at '{user}' ({exc}). Reconnecting …")
+                    user_queue.put((idx, user))
+                    break
 
             try:
-                result, method_results, expn_expanded = validate_user(
-                    s, methods, user, rcpt_domain, mail_from, args.verbose,
-                    mta_profile=mta_profile
-                )
+                s.send(b"QUIT\r\n")
+                s.close()
+            except Exception:
+                pass
 
-                # ── Rate limit detected ────────────────────────────────────────
-                if result == "ratelimit":
-                    current_delay = min(current_delay * 2, 10.0)
-                    print(f"{YELLOW}[!] Rate limit detected — increasing delay to {current_delay:.1f}s{RESET}")
-                    consecutive_ok = 0
-                    save_checkpoint(i, total, args.target)
-                    time.sleep(current_delay)
-                    break  # reconnect with new delay
+    # ── Launch threads ─────────────────────────────────────────────────────────
+    threads = []
+    for tid in range(num_threads):
+        t = threading.Thread(target=worker, args=(tid,), daemon=True)
+        t.start()
+        threads.append(t)
+        if num_threads > 1 and tid < num_threads - 1:
+            time.sleep(0.1)  # small stagger to avoid simultaneous connection storms
 
-                # ── Valid ──────────────────────────────────────────────────────
-                elif result == "valid":
-                    valid_count += 1
-                    expn_info = f" → {', '.join(expn_expanded)}" if expn_expanded else ""
-                    tag       = method_tag(method_results)
-                    print(f"{progress} {GREEN}{BOLD}[+++] VALID{RESET}     : {user}{tag}{expn_info}")
-                    entry = {
-                        "username":       user,
-                        "status":         "valid",
-                        "methods":        methods,
-                        "method_results": method_results,
-                        "expn_expanded":  expn_expanded
-                    }
-                    save_result(entry, args.output, args.output_format)
+    for t in threads:
+        t.join()
 
-                # ── Potential ──────────────────────────────────────────────────
-                elif result == "potential":
-                    potential_count += 1
-                    tag = method_tag(method_results)
-                    # Identify which method returned potential
-                    pot_methods = [m for m, r in method_results.items() if r == "potential"]
-                    pot_str = f" ({', '.join(pot_methods)} returned 252)" if pot_methods else " (252 — verify manually)"
-                    print(f"{progress} {YELLOW}[?]   POTENTIAL{RESET} : {user}{tag}{pot_str}")
-                    entry = {
-                        "username":       user,
-                        "status":         "potential",
-                        "methods":        methods,
-                        "method_results": method_results,
-                        "expn_expanded":  []
-                    }
-                    save_result(entry, args.output, args.output_format)
-
-                # ── Disabled ──────────────────────────────────────────────────
-                elif result == "disabled":
-                    if args.verbose or args.user:
-                        print(f"{progress} {GRAY}[x]   DISABLED{RESET}  : EXPN not supported on this server")
-
-                # ── Invalid ────────────────────────────────────────────────────
-                else:
-                    if args.verbose or args.user:
-                        print(f"{progress} [-]   INVALID   : {user}")
-
-                current_index  += 1
-                consecutive_ok += 1
-                # Gradually recover delay after rate limit — halve every 20 successes
-                if consecutive_ok >= 20 and current_delay > args.delay:
-                    current_delay = max(current_delay / 2, args.delay)
-                    consecutive_ok = 0
-                    print(f"{CYAN}[*] Delay recovered to {current_delay:.1f}s{RESET}")
-                # Save checkpoint every 10 users to reduce file I/O
-                if current_index % 10 == 0:
-                    save_checkpoint(current_index, total, args.target)
-                time.sleep(current_delay)
-
-            except Exception as exc:
-                print(f"[!] Connection dropped at '{user}' ({exc}). Reconnecting …")
-                save_checkpoint(current_index, total, args.target)
-                break
-
-        try:
-            s.send(b"QUIT\r\n")
-            s.close()
-        except Exception:
-            pass
+    valid_count     = counts["valid"]
+    potential_count = counts["potential"]
 
     # ── Summary ────────────────────────────────────────────────────────────────
     clear_checkpoint()
