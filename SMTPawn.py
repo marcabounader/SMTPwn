@@ -1038,8 +1038,37 @@ def save_result(entry, output_file, fmt):
 def main():
     print(BANNER)
     args = get_args()
-    # ── Validate required args ─────────────────────────────
-    if not args.resume and not args.target:
+    
+    # ── Early resume restore (before probe) ───────────────────
+    if args.resume:
+        if not os.path.exists(CHECKPOINT_FILE):
+            print("[!] No checkpoint file found")
+            sys.exit(1)
+    
+        try:
+            with open(CHECKPOINT_FILE) as f:
+                data = json.load(f)
+                session = data.get("session", {})
+    
+                saved_target = session.get("target")
+                saved_port   = session.get("port", 25)
+    
+                if not saved_target:
+                    print("[!] Resume failed: no target in checkpoint")
+                    sys.exit(1)
+    
+                # Only fill if user DID NOT provide target
+                if not args.target:
+                    args.target = saved_target
+                    args.port   = saved_port
+                    print(f"{YELLOW}[*] Resume: loaded target {args.target}:{args.port}{RESET}")
+    
+        except Exception as e:
+            print(f"[!] Failed to load checkpoint: {e}")
+            sys.exit(1)
+    
+    # ── Final validation ─────────────────────────────
+    if not args.target:
         print("[!] Error: -t/--target is required unless using --resume")
         sys.exit(1)
     # ── Apply timing template ──────────────────────────────────────────────────
