@@ -59,7 +59,6 @@ progress_state = {
     "potential": 0,
     "start_time": time.time()
 }
-
 DEFAULT_TIMING = 3
 retry_tracker = {}
 MAX_USER_RETRIES = 3
@@ -999,8 +998,8 @@ def save_checkpoint_threadsafe(total, target, session_config=None):
         "target": target,
         "completed": snapshot,
         "counts": {
-            "valid": counts["valid"],
-            "potential": counts["potential"]
+            "valid": progress_state["valid"],
+            "potential": progress_state["potential"]
         }
     }
 
@@ -1100,7 +1099,6 @@ def main():
     resumed_session = False
     # ── Early resume restore (before probe) ───────────────────
     cli = sys.argv[1:]
-    counts = {"valid": 0, "potential": 0}
     if args.resume:
         if not os.path.exists(CHECKPOINT_FILE):
             print("[!] No checkpoint file found")
@@ -1155,8 +1153,6 @@ def main():
             mail_from     = session.get("mail_from", f"noreply@{domain}")
             fp_banner = session.get("fp_banner", "")
             ehlo_caps = session.get("ehlo_caps", "")
-            counts["valid"] = counts_data.get("valid",0)
-            counts["potential"] = counts_data.get("potential",0)
             print(f"{YELLOW}[*] Resuming session — restoring full configuration{RESET}")
     
             resumed_session = True
@@ -1168,8 +1164,8 @@ def main():
             with progress_lock:
               progress_state["done"] = len(_completed_set)
               progress_state["start_time"] = time.time()
-              progress_state["valid"] = counts["valid"]
-              progress_state["potential"] = counts["potential"]
+              progress_state["valid"] = counts_data.get("valid",0)
+              progress_state["potential"] = counts_data.get("potential",0)
 
             
             print(f"{GREEN}[+] Restored {len(_completed_set)} completed users from checkpoint{RESET}")
@@ -1547,14 +1543,16 @@ def main():
                 if conn_retry_count >= MAX_CONN_RETRIES:
                     thread_safe_print(f"[!] Thread {thread_id}: failed after {MAX_CONN_RETRIES} attempts.")
                     for idx, user in batch:
-                      if idx not in _completed_set:
-                          user_queue.put((idx, user))
+                      with _completed_lock:
+                          if idx not in _completed_set:
+                            user_queue.put((idx, user))
                     break
                 thread_safe_print(f"[*] Thread {thread_id}: reconnecting in 5s … ({conn_retry_count}/{MAX_CONN_RETRIES})")
                 
                 for idx, user in batch:
-                  if idx not in _completed_set:
-                    user_queue.put((idx, user))
+                  with _completed_lock:
+                      if idx not in _completed_set:
+                        user_queue.put((idx, user))
                 time.sleep(5)
                 continue
             conn_retry_count = 0
@@ -1576,12 +1574,13 @@ def main():
     
                         if retries <= MAX_USER_RETRIES:
                             thread_safe_print(f"{progress} {YELLOW}[!] RATE LIMIT → retrying{RESET} : {user}")
-                            if idx not in _completed_set:
-                              user_queue.put((idx, user))
+                            with _completed_lock:
+                              if idx not in _completed_set:
+                                user_queue.put((idx, user))
                         else:
                             thread_safe_print(f"{progress} {YELLOW}[!] SKIP (max retries){RESET} : {user}")
     
-                        with output_lock:
+                        with progress_lock:
                             global_delay[0] = min(global_delay[0] * 1.5, 5.0)
                             current_delay = global_delay[0]
     
@@ -1604,10 +1603,9 @@ def main():
                         }
     
                         with output_lock:
-                            counts["valid"] += 1
                             save_result(entry, args.output, args.output_format)
-                            with progress_lock:
-                              progress_state["valid"] += 1
+                        with progress_lock:
+                            progress_state["valid"] += 1
                             
     
                     elif result == "potential":
@@ -1626,10 +1624,10 @@ def main():
                         }
     
                         with output_lock:
-                            counts["potential"] += 1
-                            save_result(entry, args.output, args.output_format)
-                            with progress_lock:
-                              progress_state["potential"] += 1
+                          save_result(entry, args.output, args.output_format)
+                            
+                        with progress_lock:
+                          progress_state["potential"] += 1
                             
     
                     elif result == "disabled":
@@ -1642,7 +1640,7 @@ def main():
     
                     consecutive_ok += 1
                     if consecutive_ok >= 20 and current_delay > args.delay:
-                        with output_lock:
+                        with progress_lock:
                             global_delay[0] = max(global_delay[0] / 2, args.delay)
                             current_delay = global_delay[0]
                         thread_safe_print(f"{CYAN}[*] Delay recovered to {current_delay:.1f}s{RESET}")
@@ -1650,7 +1648,7 @@ def main():
                     # Mark completed
                     mark_completed(idx)
                     with progress_lock:
-                        progress_state["done"] = len(_completed_set)
+                        progress_state["done"] += 1
                     with retry_lock:
                         retry_tracker.pop(idx, None)
     
@@ -1666,8 +1664,9 @@ def main():
     
                     if retries <= MAX_USER_RETRIES:
                         thread_safe_print(f"[!] Thread {thread_id}: retrying '{user}' ({exc})")
-                        if idx not in _completed_set:
-                          user_queue.put((idx, user))
+                        with _completed_lock:
+                            if idx not in _completed_set:
+                              user_queue.put((idx, user))
                     else:
                         thread_safe_print(f"[!] Thread {thread_id}: dropped '{user}' after retries")
     
@@ -1723,8 +1722,8 @@ def main():
     for t in threads:
         t.join()
     print()
-    valid_count     = counts["valid"]
-    potential_count = counts["potential"]
+    valid_count     = progress_state["valid"]
+    potential_count = progress_state["potential"]
     
     # ── Summary ────────────────────────────────────────────────────────────────
     clear_checkpoint()
