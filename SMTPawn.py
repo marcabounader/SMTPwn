@@ -51,8 +51,11 @@ TIMING_TEMPLATES = {
     4: {"name": "Aggressive", "delay": 0.1,  "timeout": 10.0, "batch": 20},
     5: {"name": "Insane",     "delay": 0.0,  "timeout": 5.0,  "batch": 50},
 }
-DEFAULT_TIMING = 3
 
+DEFAULT_TIMING = 3
+retry_tracker = {}
+MAX_USER_RETRIES = 3
+retry_lock = threading.Lock()
 # MTA profiles: banner keyword → behavior profile
 # Each profile defines:
 #   name         : display name
@@ -273,29 +276,33 @@ def generate_username_variations(full_name):
 def send_cmd(s, cmd, verbose=False):
     if verbose:
         print(f"  {CYAN}[>]{RESET} {cmd.strip()}")
+
     s.send(cmd.encode())
-    # Read response — may need multiple recvs for multi-line responses
+    s.settimeout(5)
+
     res = b""
+
     try:
-        while True:
+        for _ in range(5):  # max 5 chunks
             chunk = s.recv(4096)
             if not chunk:
                 break
+
             res += chunk
-            # Stop when we have a complete SMTP response
             decoded = res.decode(errors="replace")
-            lines   = decoded.splitlines()
-            # Final line of SMTP response has format '250 text' (space not dash)
+            lines = decoded.splitlines()
+
             if lines and len(lines[-1]) >= 4 and lines[-1][3] == ' ':
                 break
-            # Safety: no multi-line continuation — stop after first chunk
-            if not any(len(l) >= 4 and l[3] == '-' for l in lines):
-                break
-    except Exception:
+
+    except socket.timeout:
         pass
+
     res = res.decode(errors="replace")
+
     if verbose:
         print(f"  {GRAY}[<]{RESET} {res.strip()}")
+
     return res
 
 
@@ -929,18 +936,20 @@ CHECKPOINT_FILE = ".smtpwn_checkpoint"
 
 def load_checkpoint(target):
     if not os.path.exists(CHECKPOINT_FILE):
-        return 0, set()
+        return set()
+
     try:
         with open(CHECKPOINT_FILE) as f:
             data = json.load(f)
+
         if data.get("target") == target:
-            idx       = data.get("index", 0)
-            completed = set(data.get("completed", list(range(idx))))
-            print(f"{YELLOW}[*] Resuming from index {idx} ({len(completed)} users already done){RESET}")
-            return idx, completed
+            completed = set(data.get("completed", []))
+            print(f"{YELLOW}[*] Resuming — {len(completed)} users already done{RESET}")
+            return completed
     except Exception:
         pass
-    return 0, set()
+
+    return set()
 
 
 def clear_checkpoint():
@@ -970,21 +979,20 @@ def mark_completed(idx):
         _completed_set.add(idx)
 
 def save_checkpoint_threadsafe(total, target, session_config=None):
-    """Save progress + session config so resume uses identical settings."""
     with _completed_lock:
-        i = 0
-        while i in _completed_set:
-            i += 1
-        data = {
-            "index":     i,
-            "total":     total,
-            "target":    target,
-            "completed": sorted(_completed_set),
-        }
-        if session_config:
-            data["session"] = session_config
-        with open(CHECKPOINT_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+        snapshot = sorted(_completed_set)
+
+    data = {
+        "total": total,
+        "target": target,
+        "completed": snapshot,
+    }
+
+    if session_config:
+        data["session"] = session_config
+
+    with open(CHECKPOINT_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
 def save_result(entry, output_file, fmt):
     """Save a result entry to file atomically — safe for concurrent threads."""
@@ -1060,7 +1068,10 @@ def main():
         s_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s_probe.settimeout(args.timeout)
         s_probe.connect((args.target, args.port))
-        fp_banner = s_probe.recv(4096).decode(errors="replace")
+        try:
+          fp_banner = s_probe.recv(4096).decode(errors="replace")
+        except socket.timeout:
+          fp_banner = ""
         ehlo_res  = send_cmd(s_probe, f"EHLO {probe_domain}\r\n", False)
         if not ehlo_res.startswith("250"):
             ehlo_res = send_cmd(s_probe, f"HELO {probe_domain}\r\n", False)
@@ -1177,7 +1188,6 @@ def main():
         sys.exit(1)
 
     # ── Resume checkpoint ──────────────────────────────────────────────────────
-    start_index    = 0
     session_config = {}  # will be built later; placeholder here
 
     if args.resume:
@@ -1242,10 +1252,12 @@ def main():
                                 except FileNotFoundError:
                                     print(f"{YELLOW}[!] Restored wordlist not found: {args.wordlist}{RESET}")
 
-                        start_index, restored = load_checkpoint(args.target)
+                        restored = load_checkpoint(args.target)
+
                         with _completed_lock:
                             _completed_set.update(restored)
-                        print(f"{GREEN}[+] Session restored — continuing from user {start_index + 1}{RESET}")
+
+                        print(f"{GREEN}[+] Session restored — {len(_completed_set)} users already completed{RESET}")
                 else:
                     print(f"{YELLOW}[!] Checkpoint is for a different target — starting fresh.{RESET}")
                     clear_checkpoint()
@@ -1356,7 +1368,7 @@ def main():
         print(f"[*] User     : {args.user}")
     if args.name:
         print(f"[*] Name     : {args.name}")
-    print(f"[*] Users    : {total}{f' (resuming from {start_index + 1})' if start_index else ''}")
+    print(f"[*] Users    : {total}{f' (resumed: {len(_completed_set)} done)' if _completed_set else ''}")
     print(f"[*] Output   : {args.output} ({args.output_format})")
     if args.starttls:
         print(f"[*] STARTTLS : forced")
@@ -1419,12 +1431,14 @@ def main():
     global_delay   = [args.delay]       # mutable so threads can share rate limit state
 
     # Fill the queue — skip already completed users from checkpoint
-    for i in range(start_index, total):
-        if i not in _completed_set:
-            user_queue.put((i, all_users[i]))
+
+    for i in range(total):
+      if i not in _completed_set:
+        user_queue.put((i, all_users[i]))
     queued = user_queue.qsize()
-    if queued < (total - start_index):
-        print(f"[*] Skipped {total - start_index - queued} already completed users (checkpoint)")
+    skipped = total - queued
+    if skipped > 0:
+        print(f"[*] Skipped {skipped} already completed users (checkpoint)")
 
     def thread_safe_print(*a, **kw):
         with print_lock:
@@ -1432,11 +1446,11 @@ def main():
 
     def worker(thread_id):
         """Worker thread — each gets its own SMTP connection per batch."""
-        max_retries   = 3
-        retry_count   = 0
+        MAX_CONN_RETRIES = 3
+        conn_retry_count = 0
         consecutive_ok = 0
         current_delay  = global_delay[0]
-
+    
         while True:
             # Grab a batch of users from the queue
             batch = []
@@ -1445,30 +1459,29 @@ def main():
                     batch.append(user_queue.get_nowait())
             except queue.Empty:
                 pass
-
+    
             if not batch:
                 break  # no more users
-
+    
             # Connect
             s, _ = connect_and_init(
                 args.target, args.port, domain, args.timeout, args.verbose,
                 args.starttls, args.no_starttls, args.auth_user, args.auth_pass
             )
             if not s:
-                retry_count += 1
-                if retry_count >= max_retries:
-                    thread_safe_print(f"[!] Thread {thread_id}: failed to connect after {max_retries} attempts.")
-                    # Put users back in queue for other threads
+                conn_retry_count += 1
+                if conn_retry_count >= MAX_CONN_RETRIES:
+                    thread_safe_print(f"[!] Thread {thread_id}: failed after {MAX_CONN_RETRIES} attempts.")
                     for item in batch:
                         user_queue.put(item)
                     break
-                thread_safe_print(f"[*] Thread {thread_id}: reconnecting in 5s … ({retry_count}/{max_retries})")
+                thread_safe_print(f"[*] Thread {thread_id}: reconnecting in 5s … ({conn_retry_count}/{MAX_CONN_RETRIES})")
                 for item in batch:
                     user_queue.put(item)
                 time.sleep(5)
                 continue
-            retry_count = 0
-
+            conn_retry_count = 0
+    
             for idx, user in batch:
                 progress = f"[{idx + 1}/{total}]"
                 try:
@@ -1476,82 +1489,119 @@ def main():
                         s, methods, user, rcpt_domain, mail_from, args.verbose,
                         mta_profile=mta_profile
                     )
-
+    
                     if result == "ratelimit":
+                        with retry_lock:
+                            retry_tracker[idx] = retry_tracker.get(idx, 0) + 1
+                            retries = retry_tracker[idx]
+    
+                        if retries <= MAX_USER_RETRIES:
+                            thread_safe_print(f"{YELLOW}[!] Rate limit — retrying {user}{RESET}")
+                            user_queue.put((idx, user))
+                        else:
+                            thread_safe_print(f"{YELLOW}[!] Skipping {user} after max retries{RESET}")
+    
                         with output_lock:
-                            global_delay[0] = min(global_delay[0] * 2, 10.0)
-                            current_delay   = global_delay[0]
-                        thread_safe_print(f"{YELLOW}[!] Rate limit — delay now {current_delay:.1f}s{RESET}")
-                        consecutive_ok = 0
-                        user_queue.put((idx, user))
-                        time.sleep(current_delay)
+                            global_delay[0] = min(global_delay[0] * 1.5, 5.0)
+                            current_delay = global_delay[0]
+    
+                        thread_safe_print(f"{YELLOW}[*] Backoff increased to {current_delay:.2f}s{RESET}")
+    
+                        time.sleep(current_delay + random.uniform(0, 0.2))
                         break
-
+    
                     elif result == "valid":
-                        tag      = method_tag(method_results)
+                        tag = method_tag(method_results)
                         expn_info = f" → {', '.join(expn_expanded)}" if expn_expanded else ""
                         thread_safe_print(f"{progress} {GREEN}{BOLD}[+++] VALID{RESET}     : {user}{tag}{expn_info}")
-                        entry = {"username": user, "status": "valid", "methods": methods,
-                                 "method_results": method_results, "expn_expanded": expn_expanded}
+    
+                        entry = {
+                            "username": user,
+                            "status": "valid",
+                            "methods": methods,
+                            "method_results": method_results,
+                            "expn_expanded": expn_expanded
+                        }
+    
                         with output_lock:
                             counts["valid"] += 1
                             save_result(entry, args.output, args.output_format)
-
+    
                     elif result == "potential":
-                        tag         = method_tag(method_results)
+                        tag = method_tag(method_results)
                         pot_methods = [m for m, r in method_results.items() if r == "potential"]
-                        pot_str     = f" ({', '.join(pot_methods)} returned 252)" if pot_methods else " (252)"
+                        pot_str = f" ({', '.join(pot_methods)} returned 252)" if pot_methods else " (252)"
+    
                         thread_safe_print(f"{progress} {YELLOW}[?]   POTENTIAL{RESET} : {user}{tag}{pot_str}")
-                        entry = {"username": user, "status": "potential", "methods": methods,
-                                 "method_results": method_results, "expn_expanded": []}
+    
+                        entry = {
+                            "username": user,
+                            "status": "potential",
+                            "methods": methods,
+                            "method_results": method_results,
+                            "expn_expanded": []
+                        }
+    
                         with output_lock:
                             counts["potential"] += 1
                             save_result(entry, args.output, args.output_format)
-
+    
                     elif result == "disabled":
                         if args.verbose or args.user:
                             thread_safe_print(f"{progress} {GRAY}[x]   DISABLED{RESET}  : EXPN not supported")
-
+    
                     else:
                         if args.verbose or args.user:
                             thread_safe_print(f"{progress} [-]   INVALID   : {user}")
-
+    
                     consecutive_ok += 1
                     if consecutive_ok >= 20 and current_delay > args.delay:
                         with output_lock:
                             global_delay[0] = max(global_delay[0] / 2, args.delay)
-                            current_delay   = global_delay[0]
+                            current_delay = global_delay[0]
                         thread_safe_print(f"{CYAN}[*] Delay recovered to {current_delay:.1f}s{RESET}")
-
-                    # Mark this user done and checkpoint periodically
+    
+                    # Mark completed
                     mark_completed(idx)
+                    with retry_lock:
+                        retry_tracker.pop(idx, None)
+    
                     if (idx + 1) % 10 == 0:
                         save_checkpoint_threadsafe(total, args.target, session_config)
-
-                    time.sleep(current_delay)
-
-                except Exception as exc:
-                    thread_safe_print(f"[!] Thread {thread_id}: dropped at '{user}' ({exc}). Reconnecting …")
-                    user_queue.put((idx, user))
+    
+                    time.sleep(current_delay + random.uniform(0, 0.2))
+    
+                except Exception as exc:   # ✅ FIXED INDENTATION
+                    with retry_lock:
+                        retry_tracker[idx] = retry_tracker.get(idx, 0) + 1
+                        retries = retry_tracker[idx]
+    
+                    if retries <= MAX_USER_RETRIES:
+                        thread_safe_print(f"[!] Thread {thread_id}: retrying '{user}' ({exc})")
+                        user_queue.put((idx, user))
+                    else:
+                        thread_safe_print(f"[!] Thread {thread_id}: dropped '{user}' after retries")
+    
+                    time.sleep(current_delay + random.uniform(0, 0.2))
                     break
-
+    
             try:
                 s.send(b"QUIT\r\n")
                 s.close()
             except Exception:
                 pass
-
-    # ── Launch threads ─────────────────────────────────────────────────────────
-    threads = []
-    for tid in range(num_threads):
-        t = threading.Thread(target=worker, args=(tid,), daemon=True)
-        t.start()
-        threads.append(t)
-        if num_threads > 1 and tid < num_threads - 1:
-            time.sleep(0.1)  # small stagger to avoid simultaneous connection storms
-
-    # Handle Ctrl+C — save checkpoint and exit cleanly
-    interrupted = threading.Event()
+    
+        # ── Launch threads ─────────────────────────────────────────────────────────
+        threads = []
+        for tid in range(num_threads):
+            t = threading.Thread(target=worker, args=(tid,), daemon=True)
+            t.start()
+            threads.append(t)
+            if num_threads > 1 and tid < num_threads - 1:
+                time.sleep(0.1)  # small stagger to avoid simultaneous connection storms
+    
+        # Handle Ctrl+C — save checkpoint and exit cleanly
+        interrupted = threading.Event()
 
     def sigint_handler(sig, frame):
         if not interrupted.is_set():
