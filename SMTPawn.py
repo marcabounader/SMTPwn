@@ -87,7 +87,13 @@ def resolve_domain(args):
     """
     if args.domain:
         print(f"[*] Domain  : {args.domain} (from -d flag)")
-        return args.domain, True
+        rcpt_choice = input(f"[?] Append @{args.domain} to usernames in RCPT TO? [y/n] (default: y): ").strip().lower()
+        use_in_rcpt = rcpt_choice in ("", "y", "yes")
+        if use_in_rcpt:
+            print(f"[*] RCPT format: user@{args.domain}")
+        else:
+            print(f"[*] RCPT format: plain user (no @domain) — using {args.domain} for EHLO only")
+        return args.domain, use_in_rcpt
 
     print("[*] No -d provided — connecting to extract domain from banner …")
     try:
@@ -105,16 +111,29 @@ def resolve_domain(args):
 
     if extracted:
         print(f"\n[*] Domain found in banner: {CYAN}{extracted}{RESET}")
-        choice = input(f"[?] Use '{extracted}' as EHLO/RCPT domain? [y/n] (default: y): ").strip().lower()
-        if choice in ("", "y", "yes"):
-            return extracted, True
+        ehlo_choice = input(f"[?] Use '{extracted}' for EHLO handshake? [y/n] (default: y): ").strip().lower()
+        if ehlo_choice in ("", "y", "yes"):
+            ehlo_domain = extracted
+        else:
+            ehlo_domain = input("[?] Enter domain for EHLO (leave blank for 'pentest.local'): ").strip() or "pentest.local"
 
-    manual = input("[?] Enter domain to use (leave blank to use 'pentest.local' with no @domain in RCPT): ").strip()
-    if manual:
-        return manual, True
+        rcpt_choice = input(f"[?] Also append @{ehlo_domain} to usernames in RCPT TO? [y/n] (default: y): ").strip().lower()
+        use_in_rcpt = rcpt_choice in ("", "y", "yes")
+        if use_in_rcpt:
+            print(f"[*] EHLO domain: {ehlo_domain} | RCPT format: user@{ehlo_domain}")
+        else:
+            print(f"[*] EHLO domain: {ehlo_domain} | RCPT format: plain user (no @domain)")
+        return ehlo_domain, use_in_rcpt
 
-    print("[*] Using fallback domain: pentest.local (usernames sent without @domain)")
-    return "pentest.local", False
+    manual = input("[?] Enter domain to use for EHLO (leave blank to use 'pentest.local'): ").strip()
+    ehlo_domain = manual if manual else "pentest.local"
+
+    rcpt_choice = input(f"[?] Append @{ehlo_domain} to usernames in RCPT TO? [y/n] (default: y): ").strip().lower()
+    use_in_rcpt = rcpt_choice in ("", "y", "yes")
+
+    if not manual:
+        print(f"[*] Using fallback domain: pentest.local | RCPT format: {'user@pentest.local' if use_in_rcpt else 'plain user'}")
+    return ehlo_domain, use_in_rcpt
 
 
 def send_cmd(s, cmd, verbose=False):
