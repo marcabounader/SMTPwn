@@ -192,4 +192,4 @@ MIT — do whatever you want, don't blame me.
 
 ---
 
-> Source code & releases: [github.com/yourhandle/SMTPwn](https://github.com/yourhandle/SMTPwn)
+> Source code & releases: [github.com/marcabounader/SMTPwn](https://github.com/marcabounader/SMTPwn)
