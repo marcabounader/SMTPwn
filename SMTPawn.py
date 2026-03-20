@@ -1115,6 +1115,7 @@ def main():
             args.port          = session.get("port", 25)
             args.output        = session.get("output", args.output)
             args.output_format = session.get("output_format", args.output_format)
+            progress_state["start_time"] = session.get("start_time", time.time())
             # Timing template
             if "--timing" not in cli and "-T" not in cli:
                 args.timing = session.get("timing", args.timing)
@@ -1150,7 +1151,9 @@ def main():
     
             resumed_session = True
             restored = load_checkpoint(args.target)
-        
+            with progress_lock:
+              progress_state["done"] = len(_completed_set)
+              progress_state["start_time"] = time.time()
             with _completed_lock:
                 _completed_set.update(restored)
             
@@ -1469,6 +1472,7 @@ def main():
         "mta_profile":   mta_profile,
         "fp_banner": fp_banner,
         "ehlo_caps": ehlo_caps,
+        "start_time": progress_state["start_time"],
     }
 
     # ── Scan ───────────────────────────────────────────────────────────────────
