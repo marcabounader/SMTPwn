@@ -273,9 +273,10 @@ def generate_username_variations(full_name):
 
 # ── Network helpers ────────────────────────────────────────────────────────────
 
-def send_cmd(s, cmd, verbose, printer=thread_safe_print):
+def send_cmd(s, cmd, verbose, printer=None):
     if verbose:
-        thread_safe_print(f"  {CYAN}[>]{RESET} {cmd.strip()}")
+        with print_lock:
+          print(f"  {CYAN}[>]{RESET} {cmd.strip()}")
 
     s.send(cmd.encode())
     s.settimeout(5)
@@ -283,7 +284,7 @@ def send_cmd(s, cmd, verbose, printer=thread_safe_print):
     res = b""
 
     try:
-        for _ in range(5):  # max 5 chunks
+        for _ in range(5):
             chunk = s.recv(4096)
             if not chunk:
                 break
@@ -301,7 +302,8 @@ def send_cmd(s, cmd, verbose, printer=thread_safe_print):
     res = res.decode(errors="replace")
 
     if verbose:
-        print(f"  {GRAY}[<]{RESET} {res.strip()}")
+        with print_lock:
+            print(f"  {GRAY}[<]{RESET} {res.strip()}")
 
     return res
 
