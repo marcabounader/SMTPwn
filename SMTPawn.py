@@ -229,6 +229,9 @@ def get_args():
                             "  T4 Aggressive — 0.1s delay, batch 20 (fast)\n"
                             "  T5 Insane     — no delay, batch 50 (very fast, noisy)"
                         ))
+    parser.add_argument("--rcpt-domain",      default=None,                  help="Domain to append in RCPT TO (e.g. target.com). Use 'none' for plain username.")
+    parser.add_argument("--force",            action="store_true",           help="Proceed without prompts even if method is unreliable or EHLO fails")
+    parser.add_argument("--no-method-switch", action="store_true",           help="Never suggest switching methods after pre-flight — keep selected method")
     parser.add_argument("--no-preflight",     action="store_true",           help="Skip pre-flight check entirely")
     parser.add_argument("--preflight-mode",   choices=["selected", "all"], default="all",
                         help="Pre-flight scope: 'selected' or 'all' methods (default: all)")
@@ -335,29 +338,31 @@ def connect_and_init(target, port, domain, timeout, verbose, use_starttls=False,
 
         s = raw  # may be replaced with TLS socket below
 
-        # EHLO
-        res = send_cmd(s, f"EHLO {domain}\r\n", verbose)
+        # EHLO — always silent (protocol boilerplate), only show on failure
+        res = send_cmd(s, f"EHLO {domain}\r\n", False)
         if not res.startswith("250"):
-            res = send_cmd(s, f"HELO {domain}\r\n", verbose)
+            res = send_cmd(s, f"HELO {domain}\r\n", False)
             if not res.startswith("250"):
                 print(f"[!] Handshake failed: {res.strip()}")
                 s.close()
                 return None, banner
+        if verbose:
+            print(f"  {GRAY}[handshake] EHLO {domain} → 250 OK{RESET}")
 
-        # STARTTLS
+        # STARTTLS — always silent (protocol boilerplate), only show result
         server_supports_starttls = "STARTTLS" in res.upper()
         if not no_starttls and (use_starttls or server_supports_starttls):
             if server_supports_starttls:
-                tls_res = send_cmd(s, "STARTTLS\r\n", verbose)
+                tls_res = send_cmd(s, "STARTTLS\r\n", False)
                 if tls_res.startswith("220"):
                     ctx = ssl.create_default_context()
                     ctx.check_hostname = False
                     ctx.verify_mode    = ssl.CERT_NONE
                     s = ctx.wrap_socket(raw, server_hostname=target)
                     # Re-EHLO after TLS upgrade (required by RFC)
-                    res = send_cmd(s, f"EHLO {domain}\r\n", verbose)
+                    res = send_cmd(s, f"EHLO {domain}\r\n", False)
                     if verbose:
-                        print(f"  {GREEN}[*] TLS established{RESET}")
+                        print(f"  {GREEN}[handshake] STARTTLS → TLS established{RESET}")
                 elif use_starttls:
                     print(f"[!] STARTTLS requested but server rejected: {tls_res.strip()}")
             elif use_starttls:
@@ -445,10 +450,13 @@ def resolve_domain_interactive(banner, mta_profile, provided_domain=None, target
                 print(f"  {GREEN}[+] EHLO accepted — server responded 250{RESET}")
             else:
                 print(f"  {YELLOW}[!] EHLO warning: {result}{RESET}")
-                proceed = input(f"[?] EHLO test failed. Proceed anyway? [y/n] (default: y): ").strip().lower()
-                if proceed not in ("", "y", "yes"):
-                    print("[!] Aborting — re-run with a different -d domain.")
-                    sys.exit(0)
+                if not getattr(args, 'force', False):
+                    proceed = input(f"[?] EHLO test failed. Proceed anyway? [y/n] (default: y): ").strip().lower()
+                    if proceed not in ("", "y", "yes"):
+                        print("[!] Aborting — re-run with a different -d domain.")
+                        sys.exit(0)
+                else:
+                    print(f"[*] EHLO failed but --force set — continuing.")
         return provided_domain, None
 
     extracted = extract_domain_from_banner(banner)
@@ -712,7 +720,7 @@ def validate_user(s, methods, user, domain, mail_from, verbose, mta_profile=None
 
 # ── Pre-flight ─────────────────────────────────────────────────────────────────
 
-def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, use_starttls, no_starttls, auth_user, auth_pass, preflight_mode="all", mta_profile=None, rcpt_domain=None):
+def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, use_starttls, no_starttls, auth_user, auth_pass, preflight_mode="all", mta_profile=None, rcpt_domain=None, force=False, no_method_switch=False):
     methods_to_test = ["VRFY", "RCPT", "EXPN"] if preflight_mode == "all" else methods
     print(f"\n[*] Pre-flight: testing {preflight_mode} method(s) with garbage user …")
 
@@ -811,10 +819,13 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
     if not reliable:
         print(f"\n{YELLOW}[!] WARNING: selected method(s) ({','.join(methods)}) unreliable.{RESET}")
         print(f"[!] No reliable method found on this server.")
-        proceed = input(f"[?] Proceed anyway with {','.join(methods)} (expect false positives)? [y/n] (default: y): ").strip().lower()
-        if proceed not in ("", "y", "yes"):
-            print("[!] Aborting.")
-            sys.exit(0)
+        if not force:
+            proceed = input(f"[?] Proceed anyway with {','.join(methods)} (expect false positives)? [y/n] (default: y): ").strip().lower()
+            if proceed not in ("", "y", "yes"):
+                print("[!] Aborting.")
+                sys.exit(0)
+        else:
+            print(f"[*] --force set — proceeding with {','.join(methods)} despite unreliable results.")
         return methods, rcpt_domain
 
     # ── Case 3: other reliable options exist (selected may be reliable or not) ─
@@ -823,6 +834,16 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
     else:
         print(f"\n{YELLOW}[!] WARNING: selected method(s) ({','.join(methods)}) may be unreliable.{RESET}")
     print(f"[*] Reliable method(s) available: {', '.join(reliable)}")
+
+    # --no-method-switch: skip menu, keep selected if reliable, else pick first reliable
+    if no_method_switch:
+        if all_reliable:
+            print(f"[*] --no-method-switch: keeping {','.join(methods)}")
+            return methods, rcpt_domain
+        else:
+            chosen = reliable[0] if reliable else methods
+            print(f"[*] --no-method-switch: auto-selecting {','.join(chosen) if isinstance(chosen,list) else chosen}")
+            return ([chosen] if isinstance(chosen, str) else chosen), rcpt_domain
 
     # Build options list
     options = []
@@ -855,10 +876,13 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
     pick = input(f"[?] Choose (default: {default}): ").strip()
 
     if pick == "0" and not all_reliable:
-        proceed = input(f"[?] Proceed with {','.join(methods)} (expect false positives)? [y/n] (default: y): ").strip().lower()
-        if proceed not in ("", "y", "yes"):
-            print("[!] Aborting.")
-            sys.exit(0)
+        if not force:
+            proceed = input(f"[?] Proceed with {','.join(methods)} (expect false positives)? [y/n] (default: y): ").strip().lower()
+            if proceed not in ("", "y", "yes"):
+                print("[!] Aborting.")
+                sys.exit(0)
+        else:
+            print(f"[*] --force set — proceeding with {','.join(methods)}.")
         return methods, rcpt_domain
 
     try:
@@ -866,7 +890,7 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
         if 0 <= idx < len(options):
             chosen, label = options[idx]
             print(f"[*] Using: {label}")
-            return chosen
+            return chosen, rcpt_domain
         else:
             print(f"[!] Invalid choice — keeping {','.join(methods)}")
     except ValueError:
@@ -1030,6 +1054,15 @@ def main():
         domain, rcpt_domain_preset = domain_result, None
     args.domain = domain
 
+    # --rcpt-domain overrides interactive prompt
+    if args.rcpt_domain is not None:
+        if args.rcpt_domain.lower() == "none":
+            rcpt_domain_preset = None
+            print(f"[*] RCPT domain  : plain username (--rcpt-domain none)")
+        else:
+            rcpt_domain_preset = args.rcpt_domain
+            print(f"[*] RCPT domain  : {rcpt_domain_preset} (--rcpt-domain)")
+
     # ── STARTTLS — from probe EHLO response, no extra connection needed ────────
     starttls_advertised = "STARTTLS" in ehlo_caps.upper() or "STARTTLS" in fp_banner.upper()
     if starttls_advertised:
@@ -1132,7 +1165,9 @@ def main():
                 args.starttls, args.no_starttls, args.auth_user, args.auth_pass,
                 preflight_mode=preflight_mode,
                 mta_profile=mta_profile,
-                rcpt_domain=pf_rcpt_domain
+                rcpt_domain=pf_rcpt_domain,
+                force=args.force,
+                no_method_switch=args.no_method_switch
             )
             # If preflight asked and set rcpt_domain, use it — skip asking again
             if pf_rcpt_result is not None:
