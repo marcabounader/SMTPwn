@@ -117,11 +117,6 @@ Sample Output
 [*] Results saved to: valid_users.txt
 ```
 ---
-Recommended Wordlists
-`/usr/share/seclists/Usernames/top-usernames-shortlist.txt`
-`/usr/share/seclists/Usernames/Names/names.txt`
-`/usr/share/wordlists/metasploit/unix_users.txt`
----
 Disclaimer
 > SMTPwn is intended for **authorized penetration testing and educational use only**.  
 > Running this tool against systems you do not have explicit written permission to test is **illegal**.  
