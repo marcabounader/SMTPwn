@@ -1042,7 +1042,52 @@ def save_result(entry, output_file, fmt):
                     "expn_expanded":  ",".join(entry.get("expn_expanded", []))
                 })
 
+def progress_monitor(total):
+    while True:
+        time.sleep(0.5)
 
+        with progress_lock:
+            done = progress_state["done"]
+            valid = progress_state["valid"]
+            potential = progress_state["potential"]
+            start = progress_state["start_time"]
+
+        percent = (done / total) * 100 if total else 0
+        elapsed = time.time() - start
+        rate = done / elapsed if elapsed > 0 else 0
+
+        bar_len = 30
+        filled = int(bar_len * done / total) if total else 0
+        bar = "█" * filled + "-" * (bar_len - filled)
+
+        msg = (
+            f"\r[{bar}] {done}/{total} "
+            f"({percent:.1f}%) | "
+            f"{valid} valid | "
+            f"{potential} pot | "
+            f"{rate:.1f}/s"
+        )
+
+        with print_lock:
+            print(msg, end="", flush=True)
+
+        if done >= total:
+            break
+
+
+def input_listener(total):
+    while True:
+        try:
+            input()
+            with progress_lock:
+                done = progress_state["done"]
+                valid = progress_state["valid"]
+                potential = progress_state["potential"]
+
+            print(f"\n[*] Snapshot → {done}/{total} | valid={valid} | potential={potential}")
+
+        except:
+            break
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1455,37 +1500,6 @@ def main():
             print("\r" + " " * 120, end="\r")  # clear line
             print(*a, **kw)
           
-    def progress_monitor(total):
-      while True:
-          time.sleep(0.5)
-  
-          with progress_lock:
-              done = progress_state["done"]
-              valid = progress_state["valid"]
-              potential = progress_state["potential"]
-              start = progress_state["start_time"]
-  
-          percent = (done / total) * 100 if total else 0
-          elapsed = time.time() - start
-          rate = done / elapsed if elapsed > 0 else 0
-  
-          bar_len = 30
-          filled = int(bar_len * done / total) if total else 0
-          bar = "█" * filled + "-" * (bar_len - filled)
-  
-          msg = (
-              f"\r[{bar}] {done}/{total} "
-              f"({percent:.1f}%) | "
-              f"{GREEN}{valid} valid{RESET} | "
-              f"{YELLOW}{potential} pot{RESET} | "
-              f"{rate:.1f}/s"
-          )
-  
-          with print_lock:
-              print(msg, end="", flush=True)
-  
-          if done >= total:
-              break
     def worker(thread_id):
         """Worker thread — each gets its own SMTP connection per batch."""
         MAX_CONN_RETRIES = 3
