@@ -397,13 +397,14 @@ def random_garbage(domain=None):
 
 def resolve_domain_interactive(banner, mta_profile, provided_domain=None):
     """
-    Determine EHLO domain after fingerprinting.
-    Called after we already have the banner and MTA profile.
-    Returns domain string.
+    Determine EHLO domain and RCPT domain after fingerprinting.
+    Returns (ehlo_domain, rcpt_domain) where rcpt_domain may differ from ehlo_domain.
+    When -d is provided, both default to that domain (RCPT format asked later).
+    When -d is not provided, ask EHLO domain first, then ask RCPT domain separately.
     """
     if provided_domain:
         print(f"[*] Domain   : {provided_domain} (from -d flag)")
-        return provided_domain
+        return provided_domain, None  # rcpt domain asked later via separate prompt
 
     extracted = extract_domain_from_banner(banner)
 
@@ -419,12 +420,36 @@ def resolve_domain_interactive(banner, mta_profile, provided_domain=None):
             print(f"  {GRAY}(MTA: {mta_profile['name']}{hint}){RESET}")
         choice = input(f"[?] Use '{extracted}' for EHLO? [y/n] (default: y): ").strip().lower()
         if choice in ("", "y", "yes"):
-            return extracted
-        manual = input("[?] Enter domain for EHLO (leave blank for 'pentest.local'): ").strip()
-        return manual if manual else "pentest.local"
+            ehlo_domain = extracted
+        else:
+            manual = input("[?] Enter domain for EHLO (leave blank for 'pentest.local'): ").strip()
+            ehlo_domain = manual if manual else "pentest.local"
+    else:
+        manual = input("[?] No domain found in banner. Enter EHLO domain (leave blank for 'pentest.local'): ").strip()
+        ehlo_domain = manual if manual else "pentest.local"
 
-    manual = input("[?] No domain found in banner. Enter EHLO domain (leave blank for 'pentest.local'): ").strip()
-    return manual if manual else "pentest.local"
+    # Since -d was not provided, EHLO domain and RCPT domain may differ
+    # Ask what domain (if any) to use in RCPT TO
+    print(f"\n[*] EHLO domain set to: {CYAN}{ehlo_domain}{RESET}")
+    print(f"  {GRAY}Note: EHLO is just a handshake — RCPT TO domain can be different{RESET}")
+    rcpt_choice = input(f"[?] What domain to use in RCPT TO?\n"
+                        f"    [1] Same as EHLO ({ehlo_domain})\n"
+                        f"    [2] Different domain (you specify)\n"
+                        f"    [3] No domain — plain username only\n"
+                        f"    Choice (default: 1): ").strip()
+
+    if rcpt_choice == "2":
+        rcpt_manual = input("[?] Enter RCPT TO domain: ").strip()
+        rcpt_domain = rcpt_manual if rcpt_manual else ehlo_domain
+        print(f"[*] RCPT format: user@{rcpt_domain}")
+    elif rcpt_choice == "3":
+        rcpt_domain = None
+        print(f"[*] RCPT format: plain username (no @domain)")
+    else:
+        rcpt_domain = ehlo_domain
+        print(f"[*] RCPT format: user@{ehlo_domain}")
+
+    return ehlo_domain, rcpt_domain
 
 
 def extract_domain_from_banner(banner):
@@ -613,7 +638,7 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
     print(f"\n[*] Pre-flight: testing {preflight_mode} method(s) with garbage user …")
     print(f"[*] Garbage user : {garbage}")
 
-    s, _ = connect_and_init(target, port, domain, timeout, verbose, use_starttls, False, auth_user, auth_pass)
+    s, _ = connect_and_init(target, port, domain, timeout, verbose, use_starttls, no_starttls, auth_user, auth_pass)
     if not s:
         print("[!] Pre-flight connection failed — continuing anyway.")
         return methods
@@ -820,7 +845,11 @@ def main():
         mta_name = "Unknown"
 
     # ── Resolve domain — now informed by fingerprint ───────────────────────────
-    domain      = resolve_domain_interactive(fp_banner, mta_profile, args.domain)
+    domain_result = resolve_domain_interactive(fp_banner, mta_profile, args.domain)
+    if isinstance(domain_result, tuple):
+        domain, rcpt_domain_preset = domain_result
+    else:
+        domain, rcpt_domain_preset = domain_result, None
     args.domain = domain
 
     # ── STARTTLS ───────────────────────────────────────────────────────────────
@@ -936,17 +965,17 @@ def main():
             )
 
     # ── RCPT format — only ask if RCPT is in final methods ────────────────────
-    rcpt_domain = None
-    if "RCPT" in methods:
+    rcpt_domain = rcpt_domain_preset  # may already be set by resolve_domain_interactive
+    if "RCPT" in methods and rcpt_domain_preset is None:
+        # -d was provided — ask the RCPT format question now
         print()
-        # Use MTA profile to suggest the right default
         rcpt_fmt = mta_profile.get("rcpt_format", "both")
         if rcpt_fmt == "full":
             default_rcpt = "y"
-            hint = f"(MTA profile recommends user@domain)"
+            hint = "(MTA profile recommends user@domain)"
         elif rcpt_fmt == "plain":
             default_rcpt = "n"
-            hint = f"(MTA profile recommends plain username)"
+            hint = "(MTA profile recommends plain username)"
         else:
             default_rcpt = "y"
             hint = ""
