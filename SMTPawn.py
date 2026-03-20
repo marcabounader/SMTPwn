@@ -343,12 +343,37 @@ def main():
     if args.no_preflight:
         print("\n[*] Pre-flight skipped (--no-preflight).")
     else:
-        method = preflight_check(
-            args.target, args.port, args.domain,
-            args.method, args.timeout, args.verbose,
-            preflight_mode=args.preflight_mode
-        )
-        args.method = method
+        # If user didn't explicitly set preflight mode, ask interactively
+        run_preflight = True
+        preflight_mode = args.preflight_mode
+
+        # Check if preflight_mode was explicitly set via CLI or if we should ask
+        import sys as _sys
+        cli_args = _sys.argv[1:]
+        user_set_mode = "--preflight-mode" in cli_args
+
+        if not user_set_mode:
+            print()
+            pf_choice = input("[?] Run pre-flight check? [y/n] (default: y): ").strip().lower()
+            if pf_choice in ("n", "no"):
+                run_preflight = False
+                print("[*] Pre-flight skipped.")
+            else:
+                mode_choice = input("[?] Pre-flight mode — test [a]ll methods or [s]elected method only? (default: a): ").strip().lower()
+                if mode_choice in ("s", "selected"):
+                    preflight_mode = "selected"
+                    print(f"[*] Pre-flight mode: selected ({args.method} only)")
+                else:
+                    preflight_mode = "all"
+                    print("[*] Pre-flight mode: all methods")
+
+        if run_preflight:
+            method = preflight_check(
+                args.target, args.port, args.domain,
+                args.method, args.timeout, args.verbose,
+                preflight_mode=preflight_mode
+            )
+            args.method = method
 
     print()
     print("[*] Waiting 3s before scan to avoid rate limiting …")
