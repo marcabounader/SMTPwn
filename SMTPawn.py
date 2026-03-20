@@ -273,9 +273,9 @@ def generate_username_variations(full_name):
 
 # ── Network helpers ────────────────────────────────────────────────────────────
 
-def send_cmd(s, cmd, verbose=False):
+send_cmd(s, cmd, verbose, printer=thread_safe_print)
     if verbose:
-        print(f"  {CYAN}[>]{RESET} {cmd.strip()}")
+        thread_safe_print(f"  {CYAN}[>]{RESET} {cmd.strip()}")
 
     s.send(cmd.encode())
     s.settimeout(5)
