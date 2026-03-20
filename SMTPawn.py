@@ -174,7 +174,7 @@ def get_args():
         formatter_class=argparse.RawTextHelpFormatter
     )
     # Target
-    parser.add_argument("-t",  "--target",    required=True,       help="Target IP or hostname")
+    parser.add_argument("-t",  "--target",    required=False,       help="Target IP or hostname")
     parser.add_argument("-p",  "--port",      type=int, default=25, help="Target port (default: 25)")
     parser.add_argument("-d",  "--domain",    default=None,        help="Domain for EHLO/MAIL FROM. If omitted, extracted from banner.")
 
@@ -1036,7 +1036,10 @@ def save_result(entry, output_file, fmt):
 def main():
     print(BANNER)
     args = get_args()
-
+    # ── Validate required args ─────────────────────────────
+    if not args.resume and not args.target:
+        print("[!] Error: -t/--target is required unless using --resume")
+        sys.exit(1)
     # ── Apply timing template ──────────────────────────────────────────────────
     tmpl = TIMING_TEMPLATES[args.timing]
     # Only override if user didn't explicitly pass these flags
