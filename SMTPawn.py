@@ -156,23 +156,6 @@ MTA_DEFAULT_PROFILE = {
 # Rate-limiting / throttle response codes
 RATELIMIT_CODES = {"421", "450", "451", "452"}
 
-# MTA behavior profiles
-# 252_means: "catchall"=always 252, "potential"=may exist, "valid"=confirmed valid, "ignore"=unreliable
-# vrfy_reliable: True if 250/550 responses are trustworthy
-# rcpt_needs_domain: True if RCPT TO requires user@domain format
-# expn_likely: True if EXPN may be enabled
-MTA_PROFILES = {
-    "postfix":     {"252_means": "catchall",  "vrfy_reliable": False, "rcpt_needs_domain": False, "expn_likely": False, "tip": "VRFY returns 252 for everything. Use RCPT with plain username (no @domain)."},
-    "sendmail":    {"252_means": "potential", "vrfy_reliable": True,  "rcpt_needs_domain": False, "expn_likely": True,  "tip": "VRFY and EXPN often enabled on old configs. Very reliable."},
-    "exchange":    {"252_means": "invalid",   "vrfy_reliable": False, "rcpt_needs_domain": True,  "expn_likely": False, "tip": "VRFY disabled. Use RCPT with user@domain. 252 is not valid here."},
-    "exim":        {"252_means": "potential", "vrfy_reliable": False, "rcpt_needs_domain": True,  "expn_likely": False, "tip": "EXPN usually disabled. RCPT is most reliable."},
-    "zimbra":      {"252_means": "potential", "vrfy_reliable": False, "rcpt_needs_domain": True,  "expn_likely": False, "tip": "Similar to Postfix. Use RCPT with user@domain."},
-    "hmailserver": {"252_means": "valid",     "vrfy_reliable": True,  "rcpt_needs_domain": True,  "expn_likely": False, "tip": "VRFY returns clean 250/550. Very reliable for enumeration."},
-    "qmail":       {"252_means": "catchall",  "vrfy_reliable": False, "rcpt_needs_domain": True,  "expn_likely": False, "tip": "VRFY ignored. Use RCPT with user@domain."},
-    "haraka":      {"252_means": "potential", "vrfy_reliable": False, "rcpt_needs_domain": True,  "expn_likely": False, "tip": "Plugin-dependent behavior. RCPT is most reliable."},
-    "unknown":     {"252_means": "potential", "vrfy_reliable": False, "rcpt_needs_domain": False, "expn_likely": False, "tip": "Unknown server. Run pre-flight to assess reliability."},
-}
-
 # Username format templates — {f}=first, {l}=last, {u}=username
 USERNAME_FORMATS = [
     "{u}",
@@ -860,7 +843,7 @@ def main():
         cli = sys.argv[1:]
         if "-m" not in cli and "--method" not in cli:
             suggested = mta_profile["reliable"]
-            if suggested != args.method:
+            if [suggested] != methods:
                 print(f"  {CYAN}[*] Auto-selecting method {suggested} based on {mta_name} profile.{RESET}")
                 methods = [suggested]
 
@@ -907,8 +890,22 @@ def main():
     rcpt_domain = None
     if "RCPT" in methods:
         print()
-        rcpt_choice = input(f"[?] Append @{domain} to usernames in RCPT TO? [y/n] (default: y): ").strip().lower()
-        rcpt_domain = domain if rcpt_choice in ("", "y", "yes") else None
+        # Use MTA profile to suggest the right default
+        rcpt_fmt = mta_profile.get("rcpt_format", "both")
+        if rcpt_fmt == "full":
+            default_rcpt = "y"
+            hint = f"(MTA profile recommends user@domain)"
+        elif rcpt_fmt == "plain":
+            default_rcpt = "n"
+            hint = f"(MTA profile recommends plain username)"
+        else:
+            default_rcpt = "y"
+            hint = ""
+        prompt = f"[?] Append @{domain} to usernames in RCPT TO? [y/n] (default: {default_rcpt}) {hint}: "
+        rcpt_choice = input(prompt).strip().lower()
+        if rcpt_choice == "":
+            rcpt_choice = default_rcpt
+        rcpt_domain = domain if rcpt_choice in ("y", "yes") else None
         print(f"[*] RCPT format: {'user@' + domain if rcpt_domain else 'plain user (no @domain)'}")
 
     print()
@@ -921,7 +918,8 @@ def main():
     current_index   = start_index
     max_retries     = 3
     retry_count     = 0
-    current_delay   = args.delay  # may be auto-increased on rate limit
+    current_delay      = args.delay  # may be auto-increased on rate limit
+    consecutive_ok     = 0            # track successes to recover delay
 
     while current_index < total:
         s, _ = connect_and_init(
@@ -952,19 +950,14 @@ def main():
                     mta_profile=mta_profile
                 )
 
-                # ── Auth required ─────────────────────────────────────────────
-                if result == "auth_required":
-                    print(f"{RED}[!] Server requires AUTH before accepting commands.{RESET}")
-                    print(f"[*] Re-run with --auth-user and --auth-pass flags.")
-                    sys.exit(1)
-
                 # ── Rate limit detected ────────────────────────────────────────
                 if result == "ratelimit":
                     current_delay = min(current_delay * 2, 10.0)
                     print(f"{YELLOW}[!] Rate limit detected — increasing delay to {current_delay:.1f}s{RESET}")
+                    consecutive_ok = 0
                     save_checkpoint(i, total, args.target)
                     time.sleep(current_delay)
-                    break  # reconnect
+                    break  # reconnect with new delay
 
                 # ── Valid ──────────────────────────────────────────────────────
                 elif result == "valid":
@@ -1001,8 +994,16 @@ def main():
                     if args.verbose or args.user:
                         print(f"{progress} [-]   INVALID   : {user}")
 
-                current_index += 1
-                save_checkpoint(current_index, total, args.target)
+                current_index  += 1
+                consecutive_ok += 1
+                # Gradually recover delay after rate limit — halve every 20 successes
+                if consecutive_ok >= 20 and current_delay > args.delay:
+                    current_delay = max(current_delay / 2, args.delay)
+                    consecutive_ok = 0
+                    print(f"{CYAN}[*] Delay recovered to {current_delay:.1f}s{RESET}")
+                # Save checkpoint every 10 users to reduce file I/O
+                if current_index % 10 == 0:
+                    save_checkpoint(current_index, total, args.target)
                 time.sleep(current_delay)
 
             except Exception as exc:
