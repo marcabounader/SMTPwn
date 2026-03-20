@@ -261,15 +261,30 @@ def preflight_check(target, port, domain, method, timeout, verbose):
     current_result = results.get(method, "error")
     if current_result != "invalid":
         print(f"\n[!] WARNING: selected method {method} may produce unreliable results.")
-        reliable = [m for m, r in results.items() if r == "invalid"]  # only truly reliable methods
+        reliable = [m for m, r in results.items() if r == "invalid"]
+
         if reliable:
+            # There is a better method — suggest switching
             suggestion = reliable[0]
             choice = input(f"[?] Switch to {suggestion} (more reliable)? [y/n] (default: y): ").strip().lower()
             if choice in ("", "y", "yes"):
                 print(f"[*] Switched method to: {suggestion}")
                 return suggestion
+            else:
+                # User wants to keep original method — ask if they want to proceed anyway
+                proceed = input(f"[?] Proceed with {method} anyway (results may be unreliable)? [y/n] (default: n): ").strip().lower()
+                if proceed not in ("y", "yes"):
+                    print("[!] Aborting — rerun with a different method.")
+                    sys.exit(0)
+                print(f"[*] Proceeding with {method} — expect false positives.")
         else:
+            # No reliable method found at all
             print("[!] No reliable method found — all methods appear unreliable on this server.")
+            proceed = input(f"[?] Proceed anyway with {method} (expect false positives)? [y/n] (default: n): ").strip().lower()
+            if proceed not in ("y", "yes"):
+                print("[!] Aborting — try a different target port or approach.")
+                sys.exit(0)
+            print(f"[*] Proceeding with {method} — results may not be reliable.")
     else:
         print(f"\n[+] Method {method} looks reliable — proceeding.")
 
