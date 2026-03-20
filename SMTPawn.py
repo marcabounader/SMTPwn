@@ -632,8 +632,8 @@ def validate_user(s, methods, user, domain, mail_from, verbose, mta_profile=None
 
 # ── Pre-flight ─────────────────────────────────────────────────────────────────
 
-def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, use_starttls, no_starttls, auth_user, auth_pass, preflight_mode="all", mta_profile=None):
-    garbage        = random_garbage(domain)
+def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, use_starttls, no_starttls, auth_user, auth_pass, preflight_mode="all", mta_profile=None, rcpt_domain=None):
+    garbage        = random_garbage(rcpt_domain)
     methods_to_test = ["VRFY", "RCPT", "EXPN"] if preflight_mode == "all" else methods
     print(f"\n[*] Pre-flight: testing {preflight_mode} method(s) with garbage user …")
     print(f"[*] Garbage user : {garbage}")
@@ -653,7 +653,7 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
             if m == "VRFY":
                 res = check_vrfy(s, garbage, verbose, mta_profile)
             elif m == "RCPT":
-                res = check_rcpt(s, garbage, domain, mail_from, verbose, mta_profile)
+                res = check_rcpt(s, garbage, rcpt_domain, mail_from, verbose, mta_profile)
             elif m == "EXPN":
                 res, _ = check_expn(s, garbage, verbose, mta_profile)
             else:
@@ -961,7 +961,8 @@ def main():
                 mail_from,
                 args.starttls, args.no_starttls, args.auth_user, args.auth_pass,
                 preflight_mode=preflight_mode,
-                mta_profile=mta_profile
+                mta_profile=mta_profile,
+                rcpt_domain=rcpt_domain_preset
             )
 
     # ── RCPT format — only ask if RCPT is in final methods ────────────────────
