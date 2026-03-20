@@ -882,17 +882,31 @@ def clear_checkpoint():
 
 # ── Output helpers ─────────────────────────────────────────────────────────────
 
+def method_tag(mr):
+    """Build a tag string like [VRFY:valid RCPT:potential] from method_results dict."""
+    if not mr or len(mr) <= 1:
+        return ""
+    parts = [f"{m}:{r}" for m, r in mr.items()]
+    return f" [{' '.join(parts)}]"
+
+
 def save_result(entry, output_file, fmt):
     """Save a result entry to file in the specified format."""
+    method_results = entry.get("method_results", {})
+    # Build tag string: VRFY:valid RCPT:potential
+    tag = " | ".join(f"{m}:{r}" for m, r in method_results.items()) if len(method_results) > 1 else ""
+
     if fmt == "txt":
         with open(output_file, "a") as f:
-            f.write(entry["username"] + "\n")
+            line = entry["username"]
+            if tag:
+                line += f"  [{tag}]"
+            f.write(line + "\n")
             if entry.get("expn_expanded"):
                 for addr in entry["expn_expanded"]:
                     f.write(f"  expands_to: {addr}\n")
 
     elif fmt == "json":
-        # Read existing, append, rewrite
         data = []
         if os.path.exists(output_file):
             try:
@@ -907,14 +921,15 @@ def save_result(entry, output_file, fmt):
     elif fmt == "csv":
         file_exists = os.path.exists(output_file)
         with open(output_file, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["username", "status", "methods", "expn_expanded"])
+            writer = csv.DictWriter(f, fieldnames=["username", "status", "methods", "method_results", "expn_expanded"])
             if not file_exists:
                 writer.writeheader()
             writer.writerow({
-                "username":      entry["username"],
-                "status":        entry["status"],
-                "methods":       ",".join(entry.get("methods", [])),
-                "expn_expanded": ",".join(entry.get("expn_expanded", []))
+                "username":       entry["username"],
+                "status":         entry["status"],
+                "methods":        ",".join(entry.get("methods", [])),
+                "method_results": tag,
+                "expn_expanded":  ",".join(entry.get("expn_expanded", []))
             })
 
 
@@ -1007,17 +1022,8 @@ def main():
         if args.starttls:
             print(f"  {YELLOW}[!] --starttls forced but server did not advertise it{RESET}")
 
-    # ── MAIL FROM identity ─────────────────────────────────────────────────────
-    if args.mail_from:
-        mail_from = args.mail_from
-    else:
-        # Auto-generate from EHLO domain — but only use it if it makes sense
-        # If rcpt_domain is None (plain usernames), use a generic from
-        if rcpt_domain_preset is None:
-            mail_from = f"noreply@pentest.local"
-        else:
-            mail_from = f"noreply@{domain}"
-    print(f"[*] MAIL FROM    : {mail_from}")
+    # mail_from resolved after preflight — placeholder for now
+    mail_from = args.mail_from or None
 
     # ── Build user list ────────────────────────────────────────────────────────
     all_users = []
@@ -1059,8 +1065,7 @@ def main():
     total = len(all_users)
 
     print(f"\n[*] Target   : {args.target}:{args.port}")
-    print(f"[*] Method(s): {','.join(methods)}")
-    print(f"[*] Domain   : {domain}")
+    print(f"[*] EHLO     : {domain}")
     print(f"[*] Users    : {total}{f' (resuming from {start_index + 1})' if start_index else ''}")
     print(f"[*] Output   : {args.output} (valid) | {args.output_potential} (potential)")
     print(f"[*] Format   : {args.output_format}")
@@ -1141,6 +1146,24 @@ def main():
     elif rcpt_domain_preset is None and "RCPT" in methods:
         rcpt_domain = ask_rcpt_domain(domain, mta_profile)
 
+    # ── MAIL FROM — resolved after preflight and RCPT domain are finalised ──────
+    if args.mail_from:
+        mail_from = args.mail_from
+    elif "RCPT" not in methods:
+        mail_from = f"noreply@{domain}"
+    elif rcpt_domain:
+        mail_from = f"noreply@{rcpt_domain}"
+    else:
+        mail_from = f"noreply@{domain}"
+
+    # ── Final scan summary ─────────────────────────────────────────────────────
+    print(f"\n[*] ── Scan configuration ─────────────────────────")
+    print(f"[*] Method(s) : {','.join(methods)}")
+    rcpt_fmt_str = f"user@{rcpt_domain}" if rcpt_domain else "plain username (no @domain)"
+    print(f"[*] RCPT fmt  : {rcpt_fmt_str if 'RCPT' in methods else 'N/A — RCPT not in methods'}")
+    print(f"[*] MAIL FROM : {mail_from}{' (--mail-from)' if args.mail_from else ' (auto)'}")
+    print(f"[*] ───────────────────────────────────────────────")
+
     print()
     print("[*] Waiting 3s before scan to avoid rate limiting …")
     time.sleep(3)
@@ -1196,24 +1219,31 @@ def main():
                 elif result == "valid":
                     valid_count += 1
                     expn_info = f" → {', '.join(expn_expanded)}" if expn_expanded else ""
-                    print(f"{progress} {GREEN}{BOLD}[+++] VALID{RESET}     : {user}{expn_info}")
+                    tag       = method_tag(method_results)
+                    print(f"{progress} {GREEN}{BOLD}[+++] VALID{RESET}     : {user}{tag}{expn_info}")
                     entry = {
-                        "username":      user,
-                        "status":        "valid",
-                        "methods":       methods,
-                        "expn_expanded": expn_expanded
+                        "username":       user,
+                        "status":         "valid",
+                        "methods":        methods,
+                        "method_results": method_results,
+                        "expn_expanded":  expn_expanded
                     }
                     save_result(entry, args.output, args.output_format)
 
                 # ── Potential ──────────────────────────────────────────────────
                 elif result == "potential":
                     potential_count += 1
-                    print(f"{progress} {YELLOW}[?]   POTENTIAL{RESET} : {user} (252 — verify manually)")
+                    tag = method_tag(method_results)
+                    # Identify which method returned potential
+                    pot_methods = [m for m, r in method_results.items() if r == "potential"]
+                    pot_str = f" ({', '.join(pot_methods)} returned 252)" if pot_methods else " (252 — verify manually)"
+                    print(f"{progress} {YELLOW}[?]   POTENTIAL{RESET} : {user}{tag}{pot_str}")
                     entry = {
-                        "username":      user,
-                        "status":        "potential",
-                        "methods":       methods,
-                        "expn_expanded": []
+                        "username":       user,
+                        "status":         "potential",
+                        "methods":        methods,
+                        "method_results": method_results,
+                        "expn_expanded":  []
                     }
                     save_result(entry, args.output_potential, args.output_format)
 
