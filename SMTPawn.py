@@ -490,9 +490,22 @@ def resolve_domain_interactive(banner, mta_profile, provided_domain=None, target
         else:
             break
 
-    # Ask RCPT domain
     print(f"\n[*] EHLO domain set to: {CYAN}{ehlo_domain}{RESET}")
     print(f"  {GRAY}Note: EHLO is just a handshake — RCPT TO domain can be different{RESET}")
+
+    # Only ask RCPT domain if RCPT is in the initial methods
+    # If not, return None — will be asked later if preflight adds RCPT
+    from sys import argv as _argv
+    cli_methods = ""
+    for i, arg in enumerate(_argv):
+        if arg in ("-m", "--method") and i + 1 < len(_argv):
+            cli_methods = _argv[i + 1].upper()
+    rcpt_in_initial = "RCPT" in cli_methods
+
+    if not rcpt_in_initial:
+        print(f"  {GRAY}(RCPT TO domain will be asked if RCPT method is selected){RESET}")
+        return ehlo_domain, "ASK_LATER"
+
     rcpt_choice = input(f"[?] What domain to use in RCPT TO?\n"
                         f"    [1] Same as EHLO ({ehlo_domain})\n"
                         f"    [2] Different domain (you specify)\n"
@@ -1076,6 +1089,11 @@ def main():
                 print(f"[*] Pre-flight mode: {preflight_mode}")
 
         if run_preflight:
+            # Resolve preflight rcpt_domain:
+            # ASK_LATER = RCPT not in initial methods, use None for preflight
+            # None = -d provided, RCPT format not yet decided, use None
+            # anything else = already decided by user earlier
+            pf_rcpt_domain = None if rcpt_domain_preset in (None, "ASK_LATER") else rcpt_domain_preset
             methods = preflight_check(
                 args.target, args.port, domain,
                 methods, args.timeout, args.verbose,
@@ -1083,30 +1101,45 @@ def main():
                 args.starttls, args.no_starttls, args.auth_user, args.auth_pass,
                 preflight_mode=preflight_mode,
                 mta_profile=mta_profile,
-                rcpt_domain=rcpt_domain_preset
+                rcpt_domain=pf_rcpt_domain
             )
 
-    # ── RCPT format — only ask if RCPT is in final methods ────────────────────
-    rcpt_domain = rcpt_domain_preset  # may already be set by resolve_domain_interactive
-    if "RCPT" in methods and rcpt_domain_preset is None:
-        # -d was provided — ask the RCPT format question now
+    # ── RCPT format — ask only if RCPT is in final methods ───────────────────
+    def ask_rcpt_domain(domain, mta_profile):
+        """Interactive prompt for RCPT TO domain format."""
         print()
+        print(f"  {GRAY}Note: EHLO is just a handshake — RCPT TO domain can be different{RESET}")
         rcpt_fmt = mta_profile.get("rcpt_format", "both")
-        if rcpt_fmt == "full":
-            default_rcpt = "y"
-            hint = "(MTA profile recommends user@domain)"
-        elif rcpt_fmt == "plain":
-            default_rcpt = "n"
-            hint = "(MTA profile recommends plain username)"
+        default_choice = "1" if rcpt_fmt != "plain" else "3"
+        rcpt_choice = input(f"[?] What domain to use in RCPT TO?\n"
+                            f"    [1] Same as EHLO ({domain})\n"
+                            f"    [2] Different domain (you specify)\n"
+                            f"    [3] No domain — plain username only\n"
+                            f"    Choice (default: {default_choice}): ").strip()
+        if rcpt_choice == "2":
+            raw = input("[?] Enter RCPT TO domain: ")
+            rd = raw.strip().strip('"\'').strip() or domain
+            print(f"[*] RCPT format: user@{rd}")
+            return rd
+        elif rcpt_choice == "3" or (rcpt_choice == "" and default_choice == "3"):
+            print(f"[*] RCPT format: plain username (no @domain)")
+            return None
         else:
-            default_rcpt = "y"
-            hint = ""
-        prompt = f"[?] Append @{domain} to usernames in RCPT TO? [y/n] (default: {default_rcpt}) {hint}: "
-        rcpt_choice = input(prompt).strip().lower()
-        if rcpt_choice == "":
-            rcpt_choice = default_rcpt
-        rcpt_domain = domain if rcpt_choice in ("y", "yes") else None
-        print(f"[*] RCPT format: {'user@' + domain if rcpt_domain else 'plain user (no @domain)'}")
+            print(f"[*] RCPT format: user@{domain}")
+            return domain
+
+    rcpt_domain = rcpt_domain_preset
+
+    # ASK_LATER means RCPT wasn't in initial methods — check if it is now after preflight
+    if rcpt_domain == "ASK_LATER":
+        if "RCPT" in methods:
+            rcpt_domain = ask_rcpt_domain(domain, mta_profile)
+        else:
+            rcpt_domain = None
+
+    # rcpt_domain_preset is None means -d was provided — ask if RCPT in final methods
+    elif rcpt_domain_preset is None and "RCPT" in methods:
+        rcpt_domain = ask_rcpt_domain(domain, mta_profile)
 
     print()
     print("[*] Waiting 3s before scan to avoid rate limiting …")
