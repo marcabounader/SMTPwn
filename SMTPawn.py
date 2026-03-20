@@ -1091,6 +1091,14 @@ def input_listener(total):
 
         except:
             break
+def is_fatal_connection_error(err):
+    msg = str(err).lower()
+    return any(x in msg for x in [
+        "no route to host",
+        "connection refused",
+        "network is unreachable",
+        "timed out"
+    ])
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1221,7 +1229,10 @@ def main():
           s_probe.close()
       except Exception as e:
           print(f"[!] Probe failed: {e}")
-  
+          if is_fatal_connection_error(e):
+              print(f"{RED}[!] Target unreachable — aborting.{RESET}")
+              sys.exit(1)
+          return None, None
       # ── Fingerprint from banner ────────────────────────────────────────────────
       mta_profile = fingerprint_mta(fp_banner)
       if args.server_type:
