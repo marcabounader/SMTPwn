@@ -210,6 +210,7 @@ def get_args():
     parser.add_argument("--delay",            type=float, default=0.3,       help="Delay between queries in seconds (default: 0.3)")
     parser.add_argument("--timeout",          type=float, default=15.0,      help="Socket timeout in seconds (default: 15.0)")
     parser.add_argument("--starttls",         action="store_true",           help="Force STARTTLS upgrade after EHLO")
+    parser.add_argument("--no-starttls",      action="store_true",           help="Never use STARTTLS even if server advertises it")
     parser.add_argument("--auth-user",        default=None,                  help="SMTP AUTH username (for port 587/465)")
     parser.add_argument("--auth-pass",        default=None,                  help="SMTP AUTH password (for port 587/465)")
 
@@ -265,7 +266,26 @@ def send_cmd(s, cmd, verbose=False):
     if verbose:
         print(f"  {CYAN}[>]{RESET} {cmd.strip()}")
     s.send(cmd.encode())
-    res = s.recv(4096).decode(errors="replace")
+    # Read response — may need multiple recvs for multi-line responses
+    res = b""
+    try:
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            res += chunk
+            # Stop when we have a complete SMTP response
+            decoded = res.decode(errors="replace")
+            lines   = decoded.splitlines()
+            # Final line of SMTP response has format '250 text' (space not dash)
+            if lines and len(lines[-1]) >= 4 and lines[-1][3] == ' ':
+                break
+            # Safety: no multi-line continuation — stop after first chunk
+            if not any(len(l) >= 4 and l[3] == '-' for l in lines):
+                break
+    except Exception:
+        pass
+    res = res.decode(errors="replace")
     if verbose:
         print(f"  {GRAY}[<]{RESET} {res.strip()}")
     return res
@@ -297,7 +317,7 @@ def detect_ratelimit(response):
     return code in RATELIMIT_CODES
 
 
-def connect_and_init(target, port, domain, timeout, verbose, use_starttls=False, auth_user=None, auth_pass=None):
+def connect_and_init(target, port, domain, timeout, verbose, use_starttls=False, no_starttls=False, auth_user=None, auth_pass=None):
     """
     Open TCP connection, grab banner, EHLO/HELO handshake.
     Optionally upgrades to TLS via STARTTLS.
@@ -324,20 +344,23 @@ def connect_and_init(target, port, domain, timeout, verbose, use_starttls=False,
                 return None, banner
 
         # STARTTLS
-        if use_starttls or "STARTTLS" in res.upper():
-            if "STARTTLS" in res.upper():
+        server_supports_starttls = "STARTTLS" in res.upper()
+        if not no_starttls and (use_starttls or server_supports_starttls):
+            if server_supports_starttls:
                 tls_res = send_cmd(s, "STARTTLS\r\n", verbose)
                 if tls_res.startswith("220"):
                     ctx = ssl.create_default_context()
                     ctx.check_hostname = False
                     ctx.verify_mode    = ssl.CERT_NONE
                     s = ctx.wrap_socket(raw, server_hostname=target)
-                    # Re-EHLO after TLS upgrade
+                    # Re-EHLO after TLS upgrade (required by RFC)
                     res = send_cmd(s, f"EHLO {domain}\r\n", verbose)
                     if verbose:
                         print(f"  {GREEN}[*] TLS established{RESET}")
                 elif use_starttls:
                     print(f"[!] STARTTLS requested but server rejected: {tls_res.strip()}")
+            elif use_starttls:
+                print(f"[!] --starttls requested but server does not advertise STARTTLS")
 
         # AUTH LOGIN
         if auth_user and auth_pass:
@@ -584,17 +607,19 @@ def validate_user(s, methods, user, domain, mail_from, verbose):
 
 # ── Pre-flight ─────────────────────────────────────────────────────────────────
 
-def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, use_starttls, auth_user, auth_pass, preflight_mode="all", mta_profile=None):
+def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, use_starttls, no_starttls, auth_user, auth_pass, preflight_mode="all", mta_profile=None):
     garbage        = random_garbage(domain)
     methods_to_test = ["VRFY", "RCPT", "EXPN"] if preflight_mode == "all" else methods
     print(f"\n[*] Pre-flight: testing {preflight_mode} method(s) with garbage user …")
     print(f"[*] Garbage user : {garbage}")
 
-    s, _ = connect_and_init(target, port, domain, timeout, verbose, use_starttls, auth_user, auth_pass)
+    s, _ = connect_and_init(target, port, domain, timeout, verbose, use_starttls, False, auth_user, auth_pass)
     if not s:
         print("[!] Pre-flight connection failed — continuing anyway.")
         return methods
 
+    # Small pause after TLS handshake to let server settle
+    time.sleep(0.5)
     results = {}
     for m in methods_to_test:
         if verbose:
@@ -609,7 +634,9 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
             else:
                 res = "invalid"
             results[m] = res
-        except Exception:
+        except Exception as e:
+            if verbose:
+                print(f"  {RED}[!] {m} test error: {e}{RESET}")
             results[m] = "error"
 
     try:
@@ -836,6 +863,38 @@ def main():
             print(f"  {YELLOW}[!] No informative banner — server may be hardened or hiding MTA identity.{RESET}")
             print(f"  {YELLOW}[!] Domain extraction from banner not possible — using provided or fallback domain.{RESET}")
 
+        # Detect STARTTLS support from a quick EHLO probe
+        starttls_advertised = "STARTTLS" in fp_banner.upper()
+        if not starttls_advertised:
+            # Do a quick EHLO to check capabilities
+            try:
+                s_tls = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s_tls.settimeout(args.timeout)
+                s_tls.connect((args.target, args.port))
+                s_tls.recv(4096)
+                ehlo_res = send_cmd(s_tls, f"EHLO {domain}\r\n", False)
+                starttls_advertised = "STARTTLS" in ehlo_res.upper()
+                s_tls.close()
+            except Exception:
+                pass
+
+        if starttls_advertised:
+            print(f"[*] STARTTLS     : {GREEN}advertised by server{RESET}")
+            # Only ask interactively if neither --starttls nor --no-starttls was passed
+            cli = sys.argv[1:]
+            if "--starttls" not in cli and "--no-starttls" not in cli:
+                tls_choice = input(f"[?] Server supports STARTTLS. Use it? [y/n] (default: y): ").strip().lower()
+                if tls_choice in ("n", "no"):
+                    args.no_starttls = True
+                    print(f"[*] STARTTLS skipped — scanning without TLS")
+                else:
+                    args.starttls = True
+                    print(f"[*] STARTTLS enabled")
+        else:
+            print(f"[*] STARTTLS     : {GRAY}not advertised{RESET}")
+            if args.starttls:
+                print(f"  {YELLOW}[!] --starttls forced but server did not advertise it — will attempt anyway{RESET}")
+
         # Show MTA note
         print(f"  {YELLOW}[!] {mta_name}: {mta_profile['notes']}{RESET}")
 
@@ -881,7 +940,7 @@ def main():
                 args.target, args.port, domain,
                 methods, args.timeout, args.verbose,
                 mail_from,
-                args.starttls, args.auth_user, args.auth_pass,
+                args.starttls, args.no_starttls, args.auth_user, args.auth_pass,
                 preflight_mode=preflight_mode,
                 mta_profile=mta_profile
             )
@@ -924,7 +983,7 @@ def main():
     while current_index < total:
         s, _ = connect_and_init(
             args.target, args.port, domain, args.timeout, args.verbose,
-            args.starttls, args.auth_user, args.auth_pass
+            args.starttls, args.no_starttls, args.auth_user, args.auth_pass
         )
         if not s:
             retry_count += 1
