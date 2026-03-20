@@ -21,6 +21,12 @@
 
 ---
 
+Demo
+![SMTPwn Demo](https://img.youtube.com/vi/9zI-TxMJvuE/0.jpg)
+> Watch SMTPwn in action: MTA fingerprinting, pre-flight checks, and live SMTP user enumeration.
+
+---
+
 ## What is it?
 
 SMTPwn is a Python-based SMTP user enumeration tool that abuses the SMTP protocol to discover valid usernames on a mail server — a classic recon technique that still works on a surprising number of real-world targets.
@@ -110,7 +116,7 @@ flowchart TD
 - Timing templates T0–T5 — modeled after Nmap, controls delay/timeout/batch together
 - Custom MAIL FROM — set a believable sender identity, auto-set based on RCPT domain
 - Username variations — generate common formats from a full name (`john.doe`, `jdoe`, `j.doe`, etc.)
-- Resume/checkpoint — saves progress every 10 users, resume interrupted scans with `--resume`
+- Resume/checkpoint — saves progress, resume interrupted scans with `--resume`
 - Separate output files — confirmed valid (250) and potential (252) users saved to different files
 - Method tags in output — multi-method results tagged per method (`[RCPT:valid | VRFY:potential]`)
 - Output formats — txt, JSON, CSV
@@ -125,7 +131,7 @@ flowchart TD
 git clone https://github.com/marcabounader/SMTPwn.git
 cd SMTPwn
 # No external dependencies — pure Python stdlib
-python3 smtp_enum.py --help
+python3 SMTPawn.py --help
 ```
 
 ---
@@ -133,7 +139,7 @@ python3 smtp_enum.py --help
 ## Usage
 
 ```
-python3 smtp_enum.py -t <TARGET> [options]
+python3 SMTPawn.py -t <TARGET> [options]
 ```
 
 ### Options
@@ -214,72 +220,77 @@ You can override individual values on top of a template — e.g. `-T4 --delay 0.
 
 Basic scan — auto-extract domain, RCPT method, T3 timing:
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -w users.txt
+python3 SMTPawn.py -t 10.10.10.10 -w users.txt
 ```
 
 Specify domain explicitly:
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -d target.com -w users.txt
+python3 SMTPawn.py -t 10.10.10.10 -d target.com -w users.txt
 ```
 
 Single user check with full SMTP traffic:
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -d target.com -u admin -v
+python3 SMTPawn.py -t 10.10.10.10 -d target.com -u admin -v
 ```
 
 Use VRFY method:
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -d target.com -w users.txt -m VRFY
+python3 SMTPawn.py -t 10.10.10.10 -d target.com -w users.txt -m VRFY
 ```
 
 Combine methods — user must pass both VRFY and RCPT:
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -d target.com -w users.txt -m VRFY,RCPT
+python3 SMTPawn.py -t 10.10.10.10 -d target.com -w users.txt -m VRFY,RCPT
 ```
 
 Use all three methods:
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -d target.com -w users.txt -m VRFY,RCPT,EXPN
+python3 SMTPawn.py -t 10.10.10.10 -d target.com -w users.txt -m VRFY,RCPT,EXPN
 ```
 
 Generate username variations from a full name:
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -d target.com --name "John Doe"
+python3 SMTPawn.py -t 10.10.10.10 -d target.com --name "John Doe"
 ```
 
 Stealthy scan — T1 timing, custom MAIL FROM:
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -d target.com -w users.txt -T1 --mail-from support@target.com
+python3 SMTPawn.py -t 10.10.10.10 -d target.com -w users.txt -T1 --mail-from support@target.com
 ```
 
 Fast scan on a lab target:
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -d target.com -w users.txt -T4
+python3 SMTPawn.py -t 10.10.10.10 -d target.com -w users.txt -T4
 ```
 
 STARTTLS with AUTH on port 587:
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -p 587 -d target.com -w users.txt --starttls --auth-user user@target.com --auth-pass password
+python3 SMTPawn.py -t 10.10.10.10 -p 587 -d target.com -w users.txt --starttls --auth-user user@target.com --auth-pass password
 ```
 
 Output results as JSON:
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -d target.com -w users.txt --output-format json
+python3 SMTPawn.py -t 10.10.10.10 -d target.com -w users.txt --output-format json
 ```
 
 Resume an interrupted scan:
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -d target.com -w users.txt --resume
+python3 SMTPawn.py -t 10.10.10.10 -d target.com -w users.txt --resume
 ```
 
 Skip pre-flight entirely:
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -d target.com -w users.txt --no-preflight
+python3 SMTPawn.py -t 10.10.10.10 -d target.com -w users.txt --no-preflight
 ```
 
 Pre-flight on selected method only:
 ```bash
-python3 smtp_enum.py -t 10.10.10.10 -d target.com -w users.txt -m VRFY --preflight-mode selected
+python3 SMTPawn.py -t 10.10.10.10 -d target.com -w users.txt -m VRFY --preflight-mode selected
+```
+
+Multithreaded scan:
+```bash
+python3 SMTPawn.py -t 10.10.10.10 -w users.txt --threads 5
 ```
 
 ---
@@ -292,6 +303,8 @@ python3 smtp_enum.py -t 10.10.10.10 -d target.com -w users.txt -m VRFY --preflig
 | `RCPT` | `MAIL FROM` + `RCPT TO` — checks delivery acceptance | Most reliable. Works on almost all server types |
 | `EXPN` | Sends `EXPN <user>` — expands mailing lists/aliases | Legacy Sendmail configs. Returns expanded addresses |
 | `VRFY,RCPT` | User must pass both | Catch-all environments — reduces false positives |
+| `EXPN,RCPT` | User must pass both | Catch-all environments — reduces false positives |
+| `EXPN,VRFY` | User must pass both | Catch-all environments — reduces false positives |
 | `VRFY,RCPT,EXPN` | User must pass all three | Maximum confidence, minimum false positives |
 
 ---
