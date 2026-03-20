@@ -36,14 +36,15 @@ def get_args():
     parser.add_argument("-d", "--domain",   default=None,        help="Domain for EHLO/MAIL FROM (e.g., target.com). If omitted, extracted from banner.")
     parser.add_argument("-w", "--wordlist", help="Path to username wordlist")
     parser.add_argument("-u", "--user",     help="Test a single username")
-    parser.add_argument("-m", "--method",   choices=["VRFY", "RCPT", "EXPN", "BOTH"],
-                        default="RCPT",
+    parser.add_argument("-m", "--method",   default="RCPT",
                         help=(
-                            "Enumeration method:\n"
-                            "  VRFY  - Use SMTP VRFY command\n"
-                            "  RCPT  - Use MAIL FROM + RCPT TO (most reliable)\n"
-                            "  EXPN  - Use SMTP EXPN command\n"
-                            "  BOTH  - User must pass BOTH VRFY and RCPT (lowest false positives)"
+                            "Enumeration method(s). Single or comma-separated combination:\n"
+                            "  VRFY            - Use SMTP VRFY command\n"
+                            "  RCPT            - Use MAIL FROM + RCPT TO (most reliable)\n"
+                            "  EXPN            - Use SMTP EXPN command\n"
+                            "  VRFY,RCPT       - User must pass both VRFY and RCPT\n"
+                            "  VRFY,RCPT,EXPN  - User must pass all three\n"
+                            "  (any combination works — user must pass ALL specified methods)"
                         ))
     parser.add_argument("-o", "--output",   default="valid_users.txt", help="Output file for confirmed valid users (default: valid_users.txt)")
     parser.add_argument("--output-potential", default="potential_users.txt", help="Output file for potential users 252 (default: potential_users.txt)")
@@ -87,13 +88,7 @@ def resolve_domain(args):
     """
     if args.domain:
         print(f"[*] Domain  : {args.domain} (from -d flag)")
-        rcpt_choice = input(f"[?] Append @{args.domain} to usernames in RCPT TO? [y/n] (default: y): ").strip().lower()
-        use_in_rcpt = rcpt_choice in ("", "y", "yes")
-        if use_in_rcpt:
-            print(f"[*] RCPT format: user@{args.domain}")
-        else:
-            print(f"[*] RCPT format: plain user (no @domain) — using {args.domain} for EHLO only")
-        return args.domain, use_in_rcpt
+        return args.domain, None  # RCPT format decided later
 
     print("[*] No -d provided — connecting to extract domain from banner …")
     try:
@@ -117,23 +112,14 @@ def resolve_domain(args):
         else:
             ehlo_domain = input("[?] Enter domain for EHLO (leave blank for 'pentest.local'): ").strip() or "pentest.local"
 
-        rcpt_choice = input(f"[?] Also append @{ehlo_domain} to usernames in RCPT TO? [y/n] (default: y): ").strip().lower()
-        use_in_rcpt = rcpt_choice in ("", "y", "yes")
-        if use_in_rcpt:
-            print(f"[*] EHLO domain: {ehlo_domain} | RCPT format: user@{ehlo_domain}")
-        else:
-            print(f"[*] EHLO domain: {ehlo_domain} | RCPT format: plain user (no @domain)")
-        return ehlo_domain, use_in_rcpt
+        print(f"[*] EHLO domain: {ehlo_domain}")
+        return ehlo_domain, None  # RCPT format decided later
 
     manual = input("[?] Enter domain to use for EHLO (leave blank to use 'pentest.local'): ").strip()
     ehlo_domain = manual if manual else "pentest.local"
-
-    rcpt_choice = input(f"[?] Append @{ehlo_domain} to usernames in RCPT TO? [y/n] (default: y): ").strip().lower()
-    use_in_rcpt = rcpt_choice in ("", "y", "yes")
-
     if not manual:
-        print(f"[*] Using fallback domain: pentest.local | RCPT format: {'user@pentest.local' if use_in_rcpt else 'plain user'}")
-    return ehlo_domain, use_in_rcpt
+        print(f"[*] Using fallback domain: pentest.local")
+    return ehlo_domain, None  # RCPT format decided later
 
 
 def send_cmd(s, cmd, verbose=False):
@@ -216,20 +202,39 @@ def check_expn(s, user, verbose):
     return "invalid"
 
 
-def validate_user(s, method, user, domain, verbose):
-    """Return 'valid', 'potential', or 'invalid'."""
-    if method == "VRFY":
-        return check_vrfy(s, user, verbose)
-    if method == "RCPT":
-        return check_rcpt(s, user, domain, verbose)
-    if method == "EXPN":
-        return check_expn(s, user, verbose)
-    if method == "BOTH":
-        vrfy = check_vrfy(s, user, verbose)
-        if vrfy == "invalid":
+def validate_user(s, methods, user, domain, verbose):
+    """
+    Run all specified methods against user.
+    User is valid only if ALL methods agree (return valid or potential).
+    Returns 'valid', 'potential', or 'invalid'.
+    Single method returns its own result directly.
+    Multiple methods: all must pass — worst result wins
+    (invalid beats potential beats valid).
+    """
+    if isinstance(methods, str):
+        methods = [methods]
+
+    results = []
+    for method in methods:
+        if method == "VRFY":
+            res = check_vrfy(s, user, verbose)
+        elif method == "RCPT":
+            res = check_rcpt(s, user, domain, verbose)
+        elif method == "EXPN":
+            res = check_expn(s, user, verbose)
+        else:
+            res = "invalid"
+
+        results.append(res)
+
+        # Short-circuit: if any method says invalid, stop immediately
+        if res == "invalid":
             return "invalid"
-        return check_rcpt(s, user, domain, verbose)
-    return "invalid"
+
+    # All methods passed — return worst result (potential < valid)
+    if "potential" in results:
+        return "potential"
+    return "valid"
 
 
 # ── Pre-flight ─────────────────────────────────────────────────────────────────
@@ -241,7 +246,9 @@ def preflight_check(target, port, domain, method, timeout, verbose, preflight_mo
     Returns the method to use (may be updated by user input).
     """
     garbage = random_garbage(domain)
-    methods_to_test = ["VRFY", "RCPT", "EXPN"] if preflight_mode == "all" else [method]
+    # If method is a comma-separated string, parse it
+    method_list = [m.strip() for m in method.split(",")] if isinstance(method, str) else method
+    methods_to_test = ["VRFY", "RCPT", "EXPN"] if preflight_mode == "all" else method_list
     print(f"\n[*] Pre-flight: testing {preflight_mode} method(s) with garbage user …")
     print(f"[*] Garbage user : {garbage}")
 
@@ -255,7 +262,7 @@ def preflight_check(target, port, domain, method, timeout, verbose, preflight_mo
         if verbose:
             print(f"\n  [*] Testing {m} ...")
         try:
-            res = validate_user(s, m, garbage, domain, verbose=verbose)
+            res = validate_user(s, [m], garbage, domain, verbose=verbose)
             results[m] = res
         except Exception:
             results[m] = "error"
@@ -278,12 +285,15 @@ def preflight_check(target, port, domain, method, timeout, verbose, preflight_mo
             status = "\033[90m✗ disabled / not supported\033[0m"
         else:
             status = "\033[91m✗ error\033[0m"
-        marker = "  ◄ selected" if m == method else ""
+        marker = "  ◄ selected" if m in method_list else ""
         print(f"    {m:<6} : {status}{marker}")
 
-    current_result = results.get(method, "error")
-    if current_result != "invalid":
-        print(f"\n[!] WARNING: selected method {method} may produce unreliable results.")
+    # Check if all user-selected methods are reliable
+    selected_results = [results.get(m, "error") for m in method_list]
+    all_reliable = all(r == "invalid" for r in selected_results)
+
+    if not all_reliable:
+        print(f"\n[!] WARNING: one or more selected methods ({method}) may produce unreliable results.")
         reliable = [m for m, r in results.items() if r == "invalid"]
 
         if reliable:
@@ -327,7 +337,7 @@ def preflight_check(target, port, domain, method, timeout, verbose, preflight_mo
                 sys.exit(0)
             print(f"[*] Proceeding with {method} — results may not be reliable.")
     else:
-        print(f"\n[+] Method {method} looks reliable — proceeding.")
+        print(f"\n[+] Method(s) {method} look reliable — proceeding.")
 
     return method
 
@@ -337,6 +347,17 @@ def preflight_check(target, port, domain, method, timeout, verbose, preflight_mo
 def main():
     print(BANNER)
     args = get_args()
+
+    # ── Parse and validate methods ────────────────────────────────────────────
+    VALID_METHODS = {"VRFY", "RCPT", "EXPN"}
+    methods = [m.strip().upper() for m in args.method.split(",")]
+    invalid = [m for m in methods if m not in VALID_METHODS]
+    if invalid:
+        print(f"[!] Invalid method(s): {', '.join(invalid)}. Choose from VRFY, RCPT, EXPN.")
+        sys.exit(1)
+    methods = list(dict.fromkeys(methods))  # deduplicate preserving order
+    args.methods = methods
+    args.method  = ",".join(methods)  # keep as string for display
 
     # ── Resolve domain ─────────────────────────────────────────────────────────
     domain, use_domain_in_rcpt = resolve_domain(args)
@@ -371,7 +392,6 @@ def main():
     print(f"\n[*] Target  : {args.target}:{args.port}")
     print(f"[*] Method  : {args.method}")
     print(f"[*] Domain  : {args.domain}")
-    print(f"[*] RCPT fmt: {'user@domain' if use_domain_in_rcpt else 'plain user (no @domain)'}")
     print(f"[*] Users   : {len(all_users)}")
     print(f"[*] Output  : {args.output}")
     print(f"[*] Potential output: {args.output_potential}")
@@ -412,6 +432,18 @@ def main():
             )
             args.method = method
 
+    # ── Ask RCPT format only if method involves RCPT ───────────────────────────
+    if "RCPT" in args.methods:
+        print()
+        rcpt_choice = input(f"[?] Append @{args.domain} to usernames in RCPT TO? [y/n] (default: y): ").strip().lower()
+        use_domain_in_rcpt = rcpt_choice in ("", "y", "yes")
+        if use_domain_in_rcpt:
+            print(f"[*] RCPT format: user@{args.domain}")
+        else:
+            print(f"[*] RCPT format: plain user (no @domain)")
+    else:
+        use_domain_in_rcpt = False
+
     print()
     print("[*] Waiting 3s before scan to avoid rate limiting …")
     time.sleep(3)
@@ -445,7 +477,7 @@ def main():
             progress = f"[{i + 1}/{total}]"
 
             try:
-                result = validate_user(s, args.method, user, rcpt_domain, args.verbose)
+                result = validate_user(s, args.methods, user, rcpt_domain, args.verbose)
 
                 if result == "valid":
                     valid_count += 1
