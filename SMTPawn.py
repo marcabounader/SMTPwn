@@ -400,6 +400,15 @@ def random_garbage(domain=None):
     return f"{user}@{domain}" if domain else user
 
 
+def safe_input(prompt, default=""):
+    """safe_input() wrapper that exits cleanly on Ctrl+C."""
+    try:
+        return safe_input(prompt)
+    except KeyboardInterrupt:
+        print(f"\n\n[!] Interrupted — exiting.")
+        sys.exit(0)
+
+
 def sanitize_domain(raw):
     """Strip quotes, whitespace, and invalid characters from a domain input."""
     clean = raw.strip().strip('"\'').strip()
@@ -431,7 +440,7 @@ def test_ehlo(target, port, ehlo_domain, timeout, verbose):
         return False, str(e)
 
 
-def resolve_domain_interactive(banner, mta_profile, provided_domain=None, target=None, port=25, timeout=15.0, verbose=False, ehlo_caps=""):
+def resolve_domain_interactive(banner, mta_profile, provided_domain=None, target=None, port=25, timeout=15.0, verbose=False, ehlo_caps="", force=False):
     """
     Determine EHLO domain and RCPT domain after fingerprinting.
     Sanitises input, tests EHLO before proceeding, and asks about RCPT domain separately.
@@ -449,8 +458,8 @@ def resolve_domain_interactive(banner, mta_profile, provided_domain=None, target
                 print(f"  {GREEN}[+] EHLO accepted — server responded 250{RESET}")
             else:
                 print(f"  {YELLOW}[!] EHLO warning: {result}{RESET}")
-                if not getattr(args, 'force', False):
-                    proceed = input(f"[?] EHLO test failed. Proceed anyway? [y/n] (default: y): ").strip().lower()
+                if not force:
+                    proceed = safe_input(f"[?] EHLO test failed. Proceed anyway? [y/n] (default: y): ").strip().lower()
                     if proceed not in ("", "y", "yes"):
                         print("[!] Aborting — re-run with a different -d domain.")
                         sys.exit(0)
@@ -472,14 +481,14 @@ def resolve_domain_interactive(banner, mta_profile, provided_domain=None, target
                 hint = f" — {mta_profile['name']} typically uses plain usernames in RCPT TO"
             if hint:
                 print(f"  {GRAY}(MTA: {mta_profile['name']}{hint}){RESET}")
-            choice = input(f"[?] Use '{extracted}' for EHLO? [y/n] (default: y): ").strip().lower()
+            choice = safe_input(f"[?] Use '{extracted}' for EHLO? [y/n] (default: y): ").strip().lower()
             if choice in ("", "y", "yes"):
                 ehlo_domain = extracted
             else:
-                raw = input("[?] Enter domain for EHLO (leave blank for 'pentest.local'): ")
+                raw = safe_input("[?] Enter domain for EHLO (leave blank for 'pentest.local'): ")
                 ehlo_domain = sanitize_domain(raw) or "pentest.local"
         else:
-            raw = input("[?] No domain found in banner. Enter EHLO domain (leave blank for 'pentest.local'): ")
+            raw = safe_input("[?] No domain found in banner. Enter EHLO domain (leave blank for 'pentest.local'): ")
             ehlo_domain = sanitize_domain(raw) or "pentest.local"
 
         # Test the EHLO — skip if we already have caps from the probe connection
@@ -495,7 +504,7 @@ def resolve_domain_interactive(banner, mta_profile, provided_domain=None, target
                 break
             else:
                 print(f"  {RED}[!] EHLO failed: {result}{RESET}")
-                retry = input(f"[?] Try a different EHLO domain? [y/n] (default: y): ").strip().lower()
+                retry = safe_input(f"[?] Try a different EHLO domain? [y/n] (default: y): ").strip().lower()
                 if retry not in ("", "y", "yes"):
                     print(f"[*] Proceeding with '{ehlo_domain}' despite EHLO failure.")
                     break
@@ -519,14 +528,14 @@ def resolve_domain_interactive(banner, mta_profile, provided_domain=None, target
         print(f"  {GRAY}(RCPT TO domain will be asked if RCPT method is selected){RESET}")
         return ehlo_domain, "ASK_LATER"
 
-    rcpt_choice = input(f"[?] What domain to use in RCPT TO?\n"
+    rcpt_choice = safe_input(f"[?] What domain to use in RCPT TO?\n"
                         f"    [1] Same as EHLO ({ehlo_domain})\n"
                         f"    [2] Different domain (you specify)\n"
                         f"    [3] No domain — plain username only\n"
                         f"    Choice (default: 1): ").strip()
 
     if rcpt_choice == "2":
-        raw = input("[?] Enter RCPT TO domain: ")
+        raw = safe_input("[?] Enter RCPT TO domain: ")
         rcpt_domain = sanitize_domain(raw) or ehlo_domain
         print(f"[*] RCPT format: user@{rcpt_domain}")
     elif rcpt_choice == "3":
@@ -749,18 +758,18 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
                     print(f"  {GRAY}[*] VRFY garbage: {garbage_plain}{RESET}")
                 res = check_vrfy(s, garbage_plain, verbose, mta_profile)
             elif m == "RCPT":
-                # If rcpt_domain not set yet, ask now before testing
-                if rcpt_domain is None and "RCPT" not in methods:
+                # If rcpt_domain not set yet, and not suppressed, ask now
+                if rcpt_domain is None and "RCPT" not in methods and not no_method_switch and not force:
                     print(f"\n  {CYAN}[*] RCPT is being tested — need to know domain format{RESET}")
                     rcpt_fmt = mta_profile.get("rcpt_format", "both") if mta_profile else "both"
                     default_c = "1" if rcpt_fmt != "plain" else "3"
-                    rc = input(f"  [?] RCPT TO domain for test?\n"
+                    rc = safe_input(f"  [?] RCPT TO domain for test?\n"
                                f"      [1] Use EHLO domain ({domain})\n"
                                f"      [2] Different domain\n"
                                f"      [3] No domain — plain username\n"
                                f"      Choice (default: {default_c}): ").strip()
                     if rc == "2":
-                        raw = input("  [?] Enter domain: ").strip().strip('"\'').strip()
+                        raw = safe_input("  [?] Enter domain: ").strip().strip('"\'').strip()
                         rcpt_domain = raw if raw else domain
                     elif rc == "3" or (rc == "" and default_c == "3"):
                         rcpt_domain = None
@@ -819,7 +828,7 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
         print(f"\n{YELLOW}[!] WARNING: selected method(s) ({','.join(methods)}) unreliable.{RESET}")
         print(f"[!] No reliable method found on this server.")
         if not force:
-            proceed = input(f"[?] Proceed anyway with {','.join(methods)} (expect false positives)? [y/n] (default: y): ").strip().lower()
+            proceed = safe_input(f"[?] Proceed anyway with {','.join(methods)} (expect false positives)? [y/n] (default: y): ").strip().lower()
             if proceed not in ("", "y", "yes"):
                 print("[!] Aborting.")
                 sys.exit(0)
@@ -872,11 +881,11 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
         print(f"    [0] Keep {','.join(methods)} anyway (unreliable, expect false positives)")
 
     default = "1"
-    pick = input(f"[?] Choose (default: {default}): ").strip()
+    pick = safe_input(f"[?] Choose (default: {default}): ").strip()
 
     if pick == "0" and not all_reliable:
         if not force:
-            proceed = input(f"[?] Proceed with {','.join(methods)} (expect false positives)? [y/n] (default: y): ").strip().lower()
+            proceed = safe_input(f"[?] Proceed with {','.join(methods)} (expect false positives)? [y/n] (default: y): ").strip().lower()
             if proceed not in ("", "y", "yes"):
                 print("[!] Aborting.")
                 sys.exit(0)
@@ -1024,6 +1033,16 @@ def main():
 
     # ── Fingerprint from banner ────────────────────────────────────────────────
     mta_profile = fingerprint_mta(fp_banner)
+    # --server-type overrides fingerprint
+    if args.server_type:
+        override = args.server_type.lower()
+        for key, profile in MTA_PROFILES.items():
+            if override in key or override in profile["name"].lower():
+                mta_profile = profile
+                print(f"  {CYAN}[*] MTA overridden by --server-type: {mta_profile['name']}{RESET}")
+                break
+        else:
+            print(f"  {YELLOW}[!] --server-type '{args.server_type}' not recognised — using fingerprint result{RESET}")
     mta_name    = mta_profile["name"]
     if has_banner(fp_banner):
         print(f"[*] MTA detected : {CYAN}{mta_name}{RESET}")
@@ -1046,15 +1065,15 @@ def main():
 
     # ── Resolve domain — informed by fingerprint ───────────────────────────────
     # Pass ehlo_caps so resolve_domain_interactive can skip extra EHLO test
-    domain_result = resolve_domain_interactive(fp_banner, mta_profile, args.domain, args.target, args.port, args.timeout, args.verbose, ehlo_caps=ehlo_caps)
+    domain_result = resolve_domain_interactive(fp_banner, mta_profile, args.domain, args.target, args.port, args.timeout, args.verbose, ehlo_caps=ehlo_caps, force=args.force)
     if isinstance(domain_result, tuple):
         domain, rcpt_domain_preset = domain_result
     else:
         domain, rcpt_domain_preset = domain_result, None
     args.domain = domain
 
-    # --rcpt-domain overrides interactive prompt
-    if args.rcpt_domain is not None:
+    # --rcpt-domain overrides interactive prompt — set before preflight
+    if getattr(args, 'rcpt_domain', None) is not None:
         if args.rcpt_domain.lower() == "none":
             rcpt_domain_preset = None
             print(f"[*] RCPT domain  : plain username (--rcpt-domain none)")
@@ -1068,7 +1087,7 @@ def main():
         print(f"[*] STARTTLS     : {GREEN}advertised by server{RESET}")
         cli = sys.argv[1:]
         if "--starttls" not in cli and "--no-starttls" not in cli:
-            tls_choice = input(f"[?] Server supports STARTTLS. Use it? [y/n] (default: y): ").strip().lower()
+            tls_choice = safe_input(f"[?] Server supports STARTTLS. Use it? [y/n] (default: y): ").strip().lower()
             if tls_choice in ("n", "no"):
                 args.no_starttls = True
                 print(f"[*] STARTTLS skipped")
@@ -1142,12 +1161,12 @@ def main():
 
         if not user_set_mode:
             print()
-            pf_choice = input("[?] Run pre-flight check? [y/n] (default: y): ").strip().lower()
+            pf_choice = safe_input("[?] Run pre-flight check? [y/n] (default: y): ").strip().lower()
             if pf_choice in ("n", "no"):
                 run_preflight = False
                 print("[*] Pre-flight skipped.")
             else:
-                mode_choice = input("[?] Pre-flight mode — [a]ll methods or [s]elected only? (default: a): ").strip().lower()
+                mode_choice = safe_input("[?] Pre-flight mode — [a]ll methods or [s]elected only? (default: a): ").strip().lower()
                 preflight_mode = "selected" if mode_choice in ("s", "selected") else "all"
                 print(f"[*] Pre-flight mode: {preflight_mode}")
 
@@ -1179,13 +1198,13 @@ def main():
         print(f"  {GRAY}Note: EHLO is just a handshake — RCPT TO domain can be different{RESET}")
         rcpt_fmt = mta_profile.get("rcpt_format", "both")
         default_choice = "1" if rcpt_fmt != "plain" else "3"
-        rcpt_choice = input(f"[?] What domain to use in RCPT TO?\n"
+        rcpt_choice = safe_input(f"[?] What domain to use in RCPT TO?\n"
                             f"    [1] Same as EHLO ({domain})\n"
                             f"    [2] Different domain (you specify)\n"
                             f"    [3] No domain — plain username only\n"
                             f"    Choice (default: {default_choice}): ").strip()
         if rcpt_choice == "2":
-            raw = input("[?] Enter RCPT TO domain: ")
+            raw = safe_input("[?] Enter RCPT TO domain: ")
             rd = raw.strip().strip('"\'').strip() or domain
             print(f"[*] RCPT format: user@{rd}")
             return rd
@@ -1355,4 +1374,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n\n[!] Interrupted by user — exiting cleanly.")
+        sys.exit(0)
