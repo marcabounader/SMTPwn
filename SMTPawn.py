@@ -402,40 +402,8 @@ def extract_domain_from_banner(banner):
 
 # ── Domain resolution ──────────────────────────────────────────────────────────
 
-def resolve_domain(args):
-    if args.domain:
-        print(f"[*] Domain   : {args.domain} (from -d flag)")
-        return args.domain
 
-    print("[*] No -d provided — connecting to extract domain from banner …")
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(args.timeout)
-        s.connect((args.target, args.port))
-        banner = s.recv(4096).decode(errors="replace")
-        s.close()
-        print(f"  {GRAY}[<]{RESET} {banner.strip()}")
-    except Exception as e:
-        print(f"[!] Could not connect to extract banner: {e}")
-        banner = ""
-
-    extracted = extract_domain_from_banner(banner)
-
-    if extracted:
-        print(f"\n[*] Domain found in banner: {CYAN}{extracted}{RESET}")
-        choice = input(f"[?] Use '{extracted}' for EHLO? [y/n] (default: y): ").strip().lower()
-        if choice in ("", "y", "yes"):
-            return extracted
-        manual = input("[?] Enter domain for EHLO (leave blank for 'pentest.local'): ").strip()
-        return manual if manual else "pentest.local"
-
-    manual = input("[?] No domain in banner. Enter EHLO domain (leave blank for 'pentest.local'): ").strip()
-    return manual if manual else "pentest.local"
-
-
-# ── Core validation ────────────────────────────────────────────────────────────
-
-def check_vrfy(s, user, verbose):
+def check_vrfy(s, user, verbose, mta_profile=None):
     """
     VRFY response codes:
       250  = user exists (valid)
@@ -457,7 +425,7 @@ def check_vrfy(s, user, verbose):
     return "invalid"
 
 
-def check_rcpt(s, user, domain, mail_from, verbose):
+def check_rcpt(s, user, domain, mail_from, verbose, mta_profile=None):
     """
     RCPT TO response codes:
       250  = user accepted (valid)
@@ -496,7 +464,7 @@ def check_rcpt(s, user, domain, mail_from, verbose):
     return "invalid"
 
 
-def check_expn(s, user, verbose):
+def check_expn(s, user, verbose, mta_profile=None):
     """
     EXPN check — expands mailing lists / aliases.
     Codes:
@@ -542,7 +510,7 @@ def check_expn(s, user, verbose):
 # One-time warning tracker for disabled methods in combinations
 _disabled_warned = set()
 
-def validate_user(s, methods, user, domain, mail_from, verbose):
+def validate_user(s, methods, user, domain, mail_from, verbose, mta_profile=None):
     """
     Run all specified methods. Returns (result, per_method_results, expn_expanded).
     All methods must pass for user to be marked valid.
@@ -785,13 +753,76 @@ def main():
     # ── Parse methods ──────────────────────────────────────────────────────────
     methods = parse_methods(args.method)
 
-    # ── Resolve domain ─────────────────────────────────────────────────────────
-    domain     = resolve_domain(args)
+    # ── Fingerprint MTA first — before asking domain ───────────────────────────
+    mta_profile = MTA_DEFAULT_PROFILE
+    fp_banner   = ""
+    print(f"\n[*] Fingerprinting target …")
+    try:
+        s_fp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s_fp.settimeout(args.timeout)
+        s_fp.connect((args.target, args.port))
+        fp_banner = s_fp.recv(4096).decode(errors="replace")
+        s_fp.close()
+        mta_profile = fingerprint_mta(fp_banner)
+        mta_name    = mta_profile["name"]
+        if has_banner(fp_banner):
+            print(f"[*] MTA detected : {CYAN}{mta_name}{RESET}")
+            print(f"[*] Banner       : {fp_banner.strip()[:80]}")
+        else:
+            print(f"[*] MTA detected : {CYAN}{mta_name}{RESET}")
+            print(f"  {YELLOW}[!] No informative banner — server may be hardened.{RESET}")
+        print(f"  {YELLOW}[!] {mta_name}: {mta_profile['notes']}{RESET}")
+        cli = sys.argv[1:]
+        if "-m" not in cli and "--method" not in cli:
+            suggested = mta_profile["reliable"]
+            if [suggested] != methods:
+                print(f"  {CYAN}[*] Auto-selecting method {suggested} based on {mta_name} profile.{RESET}")
+                methods = [suggested]
+        for m in methods:
+            if m == "VRFY" and mta_profile["vrfy"] is False:
+                print(f"  {RED}[!] VRFY is known to be disabled on {mta_name} — consider switching to RCPT.{RESET}")
+            if m == "EXPN" and mta_profile["expn"] is False:
+                print(f"  {RED}[!] EXPN is known to be disabled on {mta_name} — consider switching to RCPT.{RESET}")
+    except Exception as e:
+        print(f"[!] Fingerprint failed: {e}")
+        mta_name = "Unknown"
+
+    # ── Resolve domain — now informed by fingerprint ───────────────────────────
+    domain      = resolve_domain_interactive(fp_banner, mta_profile, args.domain)
     args.domain = domain
+
+    # ── STARTTLS ───────────────────────────────────────────────────────────────
+    starttls_advertised = "STARTTLS" in fp_banner.upper()
+    if not starttls_advertised:
+        try:
+            s_tls = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s_tls.settimeout(args.timeout)
+            s_tls.connect((args.target, args.port))
+            s_tls.recv(4096)
+            ehlo_res = send_cmd(s_tls, f"EHLO {domain}\r\n", False)
+            starttls_advertised = "STARTTLS" in ehlo_res.upper()
+            s_tls.close()
+        except Exception:
+            pass
+    if starttls_advertised:
+        print(f"[*] STARTTLS     : {GREEN}advertised by server{RESET}")
+        cli = sys.argv[1:]
+        if "--starttls" not in cli and "--no-starttls" not in cli:
+            tls_choice = input(f"[?] Server supports STARTTLS. Use it? [y/n] (default: y): ").strip().lower()
+            if tls_choice in ("n", "no"):
+                args.no_starttls = True
+                print(f"[*] STARTTLS skipped")
+            else:
+                args.starttls = True
+                print(f"[*] STARTTLS enabled")
+    else:
+        print(f"[*] STARTTLS     : {GRAY}not advertised{RESET}")
+        if args.starttls:
+            print(f"  {YELLOW}[!] --starttls forced but server did not advertise it{RESET}")
 
     # ── MAIL FROM identity ─────────────────────────────────────────────────────
     mail_from = args.mail_from if args.mail_from else f"noreply@{domain}"
-    print(f"[*] MAIL FROM: {mail_from}")
+    print(f"[*] MAIL FROM    : {mail_from}")
 
     # ── Build user list ────────────────────────────────────────────────────────
     all_users = []
@@ -842,79 +873,6 @@ def main():
         print(f"[*] STARTTLS : forced")
     if args.auth_user:
         print(f"[*] AUTH     : {args.auth_user}")
-
-    # ── Fingerprint MTA ────────────────────────────────────────────────────────
-    mta_profile = MTA_DEFAULT_PROFILE
-    print(f"\n[*] Fingerprinting target …")
-    try:
-        s_fp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s_fp.settimeout(args.timeout)
-        s_fp.connect((args.target, args.port))
-        fp_banner = s_fp.recv(4096).decode(errors="replace")
-        s_fp.close()
-        mta_profile = fingerprint_mta(fp_banner)
-        mta_name    = mta_profile["name"]
-
-        if has_banner(fp_banner):
-            print(f"[*] MTA detected : {CYAN}{mta_name}{RESET}")
-            print(f"[*] Banner       : {fp_banner.strip()[:80]}")
-        else:
-            print(f"[*] MTA detected : {CYAN}{mta_name}{RESET}")
-            print(f"  {YELLOW}[!] No informative banner — server may be hardened or hiding MTA identity.{RESET}")
-            print(f"  {YELLOW}[!] Domain extraction from banner not possible — using provided or fallback domain.{RESET}")
-
-        # Detect STARTTLS support from a quick EHLO probe
-        starttls_advertised = "STARTTLS" in fp_banner.upper()
-        if not starttls_advertised:
-            # Do a quick EHLO to check capabilities
-            try:
-                s_tls = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s_tls.settimeout(args.timeout)
-                s_tls.connect((args.target, args.port))
-                s_tls.recv(4096)
-                ehlo_res = send_cmd(s_tls, f"EHLO {domain}\r\n", False)
-                starttls_advertised = "STARTTLS" in ehlo_res.upper()
-                s_tls.close()
-            except Exception:
-                pass
-
-        if starttls_advertised:
-            print(f"[*] STARTTLS     : {GREEN}advertised by server{RESET}")
-            # Only ask interactively if neither --starttls nor --no-starttls was passed
-            cli = sys.argv[1:]
-            if "--starttls" not in cli and "--no-starttls" not in cli:
-                tls_choice = input(f"[?] Server supports STARTTLS. Use it? [y/n] (default: y): ").strip().lower()
-                if tls_choice in ("n", "no"):
-                    args.no_starttls = True
-                    print(f"[*] STARTTLS skipped — scanning without TLS")
-                else:
-                    args.starttls = True
-                    print(f"[*] STARTTLS enabled")
-        else:
-            print(f"[*] STARTTLS     : {GRAY}not advertised{RESET}")
-            if args.starttls:
-                print(f"  {YELLOW}[!] --starttls forced but server did not advertise it — will attempt anyway{RESET}")
-
-        # Show MTA note
-        print(f"  {YELLOW}[!] {mta_name}: {mta_profile['notes']}{RESET}")
-
-        # Auto-adjust methods based on MTA profile if user didn't explicitly set -m
-        cli = sys.argv[1:]
-        if "-m" not in cli and "--method" not in cli:
-            suggested = mta_profile["reliable"]
-            if [suggested] != methods:
-                print(f"  {CYAN}[*] Auto-selecting method {suggested} based on {mta_name} profile.{RESET}")
-                methods = [suggested]
-
-        # Warn about methods that are known disabled on this MTA
-        for m in methods:
-            if m == "VRFY" and mta_profile["vrfy"] is False:
-                print(f"  {RED}[!] VRFY is known to be disabled on {mta_name} — consider switching to RCPT.{RESET}")
-            if m == "EXPN" and mta_profile["expn"] is False:
-                print(f"  {RED}[!] EXPN is known to be disabled on {mta_name} — consider switching to RCPT.{RESET}")
-
-    except Exception as e:
-        print(f"[!] Fingerprint failed: {e}")
 
     # ── Pre-flight ─────────────────────────────────────────────────────────────
     if args.no_preflight:
