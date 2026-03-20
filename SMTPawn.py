@@ -45,7 +45,8 @@ def get_args():
                             "  EXPN  - Use SMTP EXPN command\n"
                             "  BOTH  - User must pass BOTH VRFY and RCPT (lowest false positives)"
                         ))
-    parser.add_argument("-o", "--output",   default="valid_users.txt", help="Output file for valid users (default: valid_users.txt)")
+    parser.add_argument("-o", "--output",   default="valid_users.txt", help="Output file for confirmed valid users (default: valid_users.txt)")
+    parser.add_argument("--output-potential", default="potential_users.txt", help="Output file for potential users 252 (default: potential_users.txt)")
     parser.add_argument("-v", "--verbose",  action="store_true",       help="Show raw SMTP traffic")
     parser.add_argument("-b", "--batch",    type=int, default=10,      help="Usernames per TCP connection (default: 10)")
     parser.add_argument("--delay",          type=float, default=0.3,   help="Delay between queries in seconds (default: 0.3)")
@@ -317,6 +318,7 @@ def main():
     print(f"[*] RCPT fmt: {'user@domain' if use_domain_in_rcpt else 'plain user (no @domain)'}")
     print(f"[*] Users   : {len(all_users)}")
     print(f"[*] Output  : {args.output}")
+    print(f"[*] Potential output: {args.output_potential}")
 
     # ── Pre-flight ─────────────────────────────────────────────────────────────
     method = preflight_check(
@@ -369,8 +371,8 @@ def main():
                 elif result == "potential":
                     potential_count += 1
                     print(f"{progress} [?]   POTENTIAL : {user} (252 — verify manually)")
-                    with open(args.output, "a") as out_fh:
-                        out_fh.write(f"[POTENTIAL] {user}\n")
+                    with open(args.output_potential, "a") as out_fh:
+                        out_fh.write(f"{user}\n")
 
                 else:
                     if args.verbose or args.user:
@@ -396,10 +398,12 @@ def main():
     print(f"\n[*] Scan complete.")
     print(f"[*] Valid     : {valid_count}")
     print(f"[*] Potential : {potential_count} (252 responses — verify manually)")
-    if valid_count > 0 or potential_count > 0:
-        print(f"[*] Results saved to: {args.output}")
-    else:
-        print(f"[*] No valid users found — nothing saved.")
+    if valid_count > 0:
+        print(f"[*] Valid users saved to    : {args.output}")
+    if potential_count > 0:
+        print(f"[*] Potential users saved to: {args.output_potential}")
+    if valid_count == 0 and potential_count == 0:
+        print(f"[*] No users found — nothing saved.")
 
 
 if __name__ == "__main__":
