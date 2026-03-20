@@ -28,7 +28,7 @@ def get_args():
     )
     parser.add_argument("-t", "--target",   required=True,  help="Target IP or hostname")
     parser.add_argument("-p", "--port",     type=int, default=25, help="Target port (default: 25)")
-    parser.add_argument("-d", "--domain",   required=True,  help="Domain for HELO/MAIL FROM (e.g., target.htb)")
+    parser.add_argument("-d", "--domain",   required=True,  help="Domain for HELO/MAIL FROM (e.g., target.com)")
     parser.add_argument("-w", "--wordlist", help="Path to username wordlist")
     parser.add_argument("-u", "--user",     help="Test a single username")
     parser.add_argument("-m", "--method",   choices=["VRFY", "RCPT", "EXPN", "BOTH"],
@@ -44,7 +44,7 @@ def get_args():
     parser.add_argument("-v", "--verbose",  action="store_true",       help="Show raw SMTP traffic")
     parser.add_argument("-b", "--batch",    type=int, default=10,      help="Usernames per TCP connection (default: 10)")
     parser.add_argument("--delay",          type=float, default=0.3,   help="Delay between queries in seconds (default: 0.3)")
-    parser.add_argument("--timeout",        type=float, default=7.0,   help="Socket timeout in seconds (default: 7.0)")
+    parser.add_argument("--timeout",        type=float, default=10.0,  help="Socket timeout in seconds (default: 10.0)")
     return parser.parse_args()
 
 
@@ -83,8 +83,7 @@ def connect_and_init(args):
         return s
 
     except Exception as e:
-        if args.verbose:
-            print(f"[!] Connection error: {e}")
+        print(f"[!] Connection error: {e}")
         return None
 
 
@@ -211,18 +210,28 @@ def main():
     # ── Pre-flight ─────────────────────────────────────────────────────────────
     preflight_check(args)
     print()
+    print("[*] Waiting 3s before scan to avoid rate limiting …")
+    time.sleep(3)
 
     # ── Scan ───────────────────────────────────────────────────────────────────
     valid_count   = 0
     current_index = 0
     total         = len(all_users)
 
+    max_retries = 3
+    retry_count = 0
+
     while current_index < total:
         s = connect_and_init(args)
         if not s:
-            print("[*] Could not connect — retrying in 5 s …")
+            retry_count += 1
+            if retry_count >= max_retries:
+                print(f"[!] Failed to connect after {max_retries} attempts. Check target, port, and VPN.")
+                sys.exit(1)
+            print(f"[*] Could not connect — retrying in 5 s … ({retry_count}/{max_retries})")
             time.sleep(5)
             continue
+        retry_count = 0
 
         batch_end = min(current_index + args.batch, total)
 
