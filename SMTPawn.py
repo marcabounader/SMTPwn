@@ -1479,10 +1479,13 @@ def main():
                     for idx, user in batch:
                       if idx not in _completed_set:
                           user_queue.put((idx, user))
+                    break
                 thread_safe_print(f"[*] Thread {thread_id}: reconnecting in 5s … ({conn_retry_count}/{MAX_CONN_RETRIES})")
+                
                 for idx, user in batch:
                   if idx not in _completed_set:
                     user_queue.put((idx, user))
+                time.sleep(5)
                 continue
             conn_retry_count = 0
     
