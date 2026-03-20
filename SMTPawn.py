@@ -1077,7 +1077,8 @@ def main():
             methods       = session.get("methods", ["RCPT"])
             rcpt_domain   = session.get("rcpt_domain", None)
             mail_from     = session.get("mail_from", f"noreply@{domain}")
-    
+            fp_banner = session.get("fp_banner", "")
+            ehlo_caps = session.get("ehlo_caps", "")
             print(f"{YELLOW}[*] Resuming session — restoring full configuration{RESET}")
             print(f"[*] Target   : {args.target}:{args.port}")
             print(f"[*] Methods  : {','.join(methods)}")
