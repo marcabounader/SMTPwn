@@ -894,7 +894,7 @@ def save_result(entry, output_file, fmt):
     """Save a result entry to file in the specified format."""
     method_results = entry.get("method_results", {})
     # Build tag string: VRFY:valid RCPT:potential
-    tag = " | ".join(f"{m}:{r}" for m, r in method_results.items()) if len(method_results) > 1 else ""
+    tag = " | ".join(f"{m}:{r}" for m, r in method_results.items()) if method_results else ""
 
     if fmt == "txt":
         with open(output_file, "a") as f:
@@ -928,7 +928,7 @@ def save_result(entry, output_file, fmt):
                 "username":       entry["username"],
                 "status":         entry["status"],
                 "methods":        ",".join(entry.get("methods", [])),
-                "method_results": tag,
+                "method_results": " | ".join(f"{m}:{r}" for m,r in method_results.items()) if method_results else "",
                 "expn_expanded":  ",".join(entry.get("expn_expanded", []))
             })
 
