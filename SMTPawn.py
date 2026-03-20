@@ -22,7 +22,7 @@ BANNER = BLUE + r"""
   ___) | |  | | | | |  __/ \ V  V /| | | |
  |____/|_|  |_| |_| |_|     \_/\_/ |_| |_|
 
-  SMTP User Enumerator  |  authorized testing only
+  SMTP User Enumerator  |  by Marc Abou Nader
 """ + RESET
 
 
