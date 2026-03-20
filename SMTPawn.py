@@ -396,41 +396,101 @@ def random_garbage(domain=None):
     return f"{user}@{domain}" if domain else user
 
 
-def resolve_domain_interactive(banner, mta_profile, provided_domain=None):
+def sanitize_domain(raw):
+    """Strip quotes, whitespace, and invalid characters from a domain input."""
+    clean = raw.strip().strip('"\'').strip()
+    # Basic validity check — must contain at least one alphanumeric character
+    if not clean or not re.match(r'[a-zA-Z0-9]', clean):
+        return None
+    return clean
+
+
+def test_ehlo(target, port, ehlo_domain, timeout, verbose):
+    """
+    Quick EHLO test — connect, send EHLO, verify 250 response.
+    Returns (True, capabilities) or (False, error_message).
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((target, port))
+        s.recv(4096)  # banner
+        res = send_cmd(s, f"EHLO {ehlo_domain}\r\n", verbose)
+        s.send(b"QUIT\r\n")
+        s.close()
+        if res.startswith("250"):
+            caps = [line.split("-", 1)[1].strip() if "-" in line else line[4:].strip()
+                    for line in res.splitlines() if line.startswith("250")]
+            return True, caps
+        return False, res.strip()
+    except Exception as e:
+        return False, str(e)
+
+
+def resolve_domain_interactive(banner, mta_profile, provided_domain=None, target=None, port=25, timeout=15.0, verbose=False):
     """
     Determine EHLO domain and RCPT domain after fingerprinting.
-    Returns (ehlo_domain, rcpt_domain) where rcpt_domain may differ from ehlo_domain.
-    When -d is provided, both default to that domain (RCPT format asked later).
-    When -d is not provided, ask EHLO domain first, then ask RCPT domain separately.
+    Sanitises input, tests EHLO before proceeding, and asks about RCPT domain separately.
+    Returns (ehlo_domain, rcpt_domain).
     """
     if provided_domain:
         print(f"[*] Domain   : {provided_domain} (from -d flag)")
-        return provided_domain, None  # rcpt domain asked later via separate prompt
+        # Still test EHLO with provided domain
+        if target:
+            print(f"[*] Testing EHLO with '{provided_domain}' …")
+            ok, result = test_ehlo(target, port, provided_domain, timeout, verbose)
+            if ok:
+                print(f"  {GREEN}[+] EHLO accepted — server responded 250{RESET}")
+            else:
+                print(f"  {YELLOW}[!] EHLO warning: {result}{RESET}")
+                proceed = input(f"[?] EHLO test failed. Proceed anyway? [y/n] (default: y): ").strip().lower()
+                if proceed not in ("", "y", "yes"):
+                    print("[!] Aborting — re-run with a different -d domain.")
+                    sys.exit(0)
+        return provided_domain, None
 
     extracted = extract_domain_from_banner(banner)
 
-    if extracted:
-        print(f"\n[*] Domain found in banner: {CYAN}{extracted}{RESET}")
-        rcpt_fmt = mta_profile.get("rcpt_format", "both")
-        hint = ""
-        if rcpt_fmt == "full":
-            hint = f" — {mta_profile['name']} typically needs user@domain in RCPT TO"
-        elif rcpt_fmt == "plain":
-            hint = f" — {mta_profile['name']} typically uses plain usernames in RCPT TO"
-        if hint:
-            print(f"  {GRAY}(MTA: {mta_profile['name']}{hint}){RESET}")
-        choice = input(f"[?] Use '{extracted}' for EHLO? [y/n] (default: y): ").strip().lower()
-        if choice in ("", "y", "yes"):
-            ehlo_domain = extracted
+    # Ask for EHLO domain, test it, retry if failed
+    while True:
+        if extracted:
+            print(f"\n[*] Domain found in banner: {CYAN}{extracted}{RESET}")
+            rcpt_fmt = mta_profile.get("rcpt_format", "both")
+            hint = ""
+            if rcpt_fmt == "full":
+                hint = f" — {mta_profile['name']} typically needs user@domain in RCPT TO"
+            elif rcpt_fmt == "plain":
+                hint = f" — {mta_profile['name']} typically uses plain usernames in RCPT TO"
+            if hint:
+                print(f"  {GRAY}(MTA: {mta_profile['name']}{hint}){RESET}")
+            choice = input(f"[?] Use '{extracted}' for EHLO? [y/n] (default: y): ").strip().lower()
+            if choice in ("", "y", "yes"):
+                ehlo_domain = extracted
+            else:
+                raw = input("[?] Enter domain for EHLO (leave blank for 'pentest.local'): ")
+                ehlo_domain = sanitize_domain(raw) or "pentest.local"
         else:
-            manual = input("[?] Enter domain for EHLO (leave blank for 'pentest.local'): ").strip()
-            ehlo_domain = manual if manual else "pentest.local"
-    else:
-        manual = input("[?] No domain found in banner. Enter EHLO domain (leave blank for 'pentest.local'): ").strip()
-        ehlo_domain = manual if manual else "pentest.local"
+            raw = input("[?] No domain found in banner. Enter EHLO domain (leave blank for 'pentest.local'): ")
+            ehlo_domain = sanitize_domain(raw) or "pentest.local"
 
-    # Since -d was not provided, EHLO domain and RCPT domain may differ
-    # Ask what domain (if any) to use in RCPT TO
+        # Test the EHLO
+        if target:
+            print(f"[*] Testing EHLO with '{ehlo_domain}' …")
+            ok, result = test_ehlo(target, port, ehlo_domain, timeout, verbose)
+            if ok:
+                print(f"  {GREEN}[+] EHLO accepted — server responded 250{RESET}")
+                break
+            else:
+                print(f"  {RED}[!] EHLO failed: {result}{RESET}")
+                retry = input(f"[?] Try a different EHLO domain? [y/n] (default: y): ").strip().lower()
+                if retry not in ("", "y", "yes"):
+                    print(f"[*] Proceeding with '{ehlo_domain}' despite EHLO failure.")
+                    break
+                extracted = None  # clear so next loop asks manually
+        else:
+            break
+
+    # Ask RCPT domain
     print(f"\n[*] EHLO domain set to: {CYAN}{ehlo_domain}{RESET}")
     print(f"  {GRAY}Note: EHLO is just a handshake — RCPT TO domain can be different{RESET}")
     rcpt_choice = input(f"[?] What domain to use in RCPT TO?\n"
@@ -440,8 +500,8 @@ def resolve_domain_interactive(banner, mta_profile, provided_domain=None):
                         f"    Choice (default: 1): ").strip()
 
     if rcpt_choice == "2":
-        rcpt_manual = input("[?] Enter RCPT TO domain: ").strip()
-        rcpt_domain = rcpt_manual if rcpt_manual else ehlo_domain
+        raw = input("[?] Enter RCPT TO domain: ")
+        rcpt_domain = sanitize_domain(raw) or ehlo_domain
         print(f"[*] RCPT format: user@{rcpt_domain}")
     elif rcpt_choice == "3":
         rcpt_domain = None
@@ -634,10 +694,8 @@ def validate_user(s, methods, user, domain, mail_from, verbose, mta_profile=None
 # ── Pre-flight ─────────────────────────────────────────────────────────────────
 
 def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, use_starttls, no_starttls, auth_user, auth_pass, preflight_mode="all", mta_profile=None, rcpt_domain=None):
-    garbage        = random_garbage(rcpt_domain)
     methods_to_test = ["VRFY", "RCPT", "EXPN"] if preflight_mode == "all" else methods
     print(f"\n[*] Pre-flight: testing {preflight_mode} method(s) with garbage user …")
-    print(f"[*] Garbage user : {garbage}")
 
     s, _ = connect_and_init(target, port, domain, timeout, verbose, use_starttls, no_starttls, auth_user, auth_pass)
     if not s:
@@ -646,17 +704,30 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
 
     # Small pause after TLS handshake to let server settle
     time.sleep(0.5)
+    # Generate method-specific garbage users
+    # VRFY: plain username only — testing local users, @domain causes 252 for external
+    # RCPT: use rcpt_domain so it matches actual scan behaviour
+    # EXPN: plain username (no domain needed)
+    rand_part      = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+    garbage_plain  = f"zz_probe_{rand_part}_xXx"
+    garbage_rcpt   = f"{garbage_plain}@{rcpt_domain}" if rcpt_domain else garbage_plain
+
     results = {}
     for m in methods_to_test:
         if verbose:
             print(f"\n  [*] Testing {m} …")
         try:
             if m == "VRFY":
-                res = check_vrfy(s, garbage, verbose, mta_profile)
+                # Always use plain username for VRFY — avoids false 252 on external domains
+                if verbose:
+                    print(f"  {GRAY}[*] VRFY garbage: {garbage_plain}{RESET}")
+                res = check_vrfy(s, garbage_plain, verbose, mta_profile)
             elif m == "RCPT":
-                res = check_rcpt(s, garbage, rcpt_domain, mail_from, verbose, mta_profile)
+                if verbose:
+                    print(f"  {GRAY}[*] RCPT garbage: {garbage_rcpt}{RESET}")
+                res = check_rcpt(s, garbage_plain, rcpt_domain, mail_from, verbose, mta_profile)
             elif m == "EXPN":
-                res, _ = check_expn(s, garbage, verbose, mta_profile)
+                res, _ = check_expn(s, garbage_plain, verbose, mta_profile)
             else:
                 res = "invalid"
             results[m] = res
@@ -887,7 +958,7 @@ def main():
         mta_name = "Unknown"
 
     # ── Resolve domain — now informed by fingerprint ───────────────────────────
-    domain_result = resolve_domain_interactive(fp_banner, mta_profile, args.domain)
+    domain_result = resolve_domain_interactive(fp_banner, mta_profile, args.domain, args.target, args.port, args.timeout, args.verbose)
     if isinstance(domain_result, tuple):
         domain, rcpt_domain_preset = domain_result
     else:
@@ -924,7 +995,15 @@ def main():
             print(f"  {YELLOW}[!] --starttls forced but server did not advertise it{RESET}")
 
     # ── MAIL FROM identity ─────────────────────────────────────────────────────
-    mail_from = args.mail_from if args.mail_from else f"noreply@{domain}"
+    if args.mail_from:
+        mail_from = args.mail_from
+    else:
+        # Auto-generate from EHLO domain — but only use it if it makes sense
+        # If rcpt_domain is None (plain usernames), use a generic from
+        if rcpt_domain_preset is None:
+            mail_from = f"noreply@pentest.local"
+        else:
+            mail_from = f"noreply@{domain}"
     print(f"[*] MAIL FROM    : {mail_from}")
 
     # ── Build user list ────────────────────────────────────────────────────────
