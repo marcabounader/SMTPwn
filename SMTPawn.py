@@ -1476,19 +1476,21 @@ def main():
                 conn_retry_count += 1
                 if conn_retry_count >= MAX_CONN_RETRIES:
                     thread_safe_print(f"[!] Thread {thread_id}: failed after {MAX_CONN_RETRIES} attempts.")
-                    for item in batch:
-                        user_queue.put(item)
-                    break
+                    for idx, user in batch:
+                      if idx not in _completed_set:
+                          user_queue.put((idx, user))
                 thread_safe_print(f"[*] Thread {thread_id}: reconnecting in 5s … ({conn_retry_count}/{MAX_CONN_RETRIES})")
-                for item in batch:
-                    user_queue.put(item)
-                time.sleep(5)
+                for idx, user in batch:
+                  if idx not in _completed_set:
+                    user_queue.put((idx, user))
                 continue
             conn_retry_count = 0
     
             for idx, user in batch:
-                progress = f"[{idx + 1}/{total}]"
+                progress = f"[T{thread_id}][{idx + 1}/{total}]"
                 try:
+                    if args.verbose:
+                      thread_safe_print(f"{progress} → START {user}")
                     result, method_results, expn_expanded = validate_user(
                         s, methods, user, rcpt_domain, mail_from, args.verbose,
                         mta_profile=mta_profile
@@ -1500,16 +1502,17 @@ def main():
                             retries = retry_tracker[idx]
     
                         if retries <= MAX_USER_RETRIES:
-                            thread_safe_print(f"{YELLOW}[!] Rate limit — retrying {user}{RESET}")
-                            user_queue.put((idx, user))
+                            thread_safe_print(f"{progress} {YELLOW}[!] RATE LIMIT → retrying{RESET} : {user}")
+                            if idx not in _completed_set:
+                              user_queue.put((idx, user))
                         else:
-                            thread_safe_print(f"{YELLOW}[!] Skipping {user} after max retries{RESET}")
+                            thread_safe_print(f"{progress} {YELLOW}[!] SKIP (max retries){RESET} : {user}")
     
                         with output_lock:
                             global_delay[0] = min(global_delay[0] * 1.5, 5.0)
                             current_delay = global_delay[0]
     
-                        thread_safe_print(f"{YELLOW}[*] Backoff increased to {current_delay:.2f}s{RESET}")
+                        thread_safe_print(f"{progress} {YELLOW}[*] Backoff → {current_delay:.2f}s{RESET}")
     
                         time.sleep(current_delay + random.uniform(0, 0.2))
                         break
@@ -1575,14 +1578,15 @@ def main():
     
                     time.sleep(current_delay + random.uniform(0, 0.2))
     
-                except Exception as exc:   # ✅ FIXED INDENTATION
+                except Exception as exc:
                     with retry_lock:
                         retry_tracker[idx] = retry_tracker.get(idx, 0) + 1
                         retries = retry_tracker[idx]
     
                     if retries <= MAX_USER_RETRIES:
                         thread_safe_print(f"[!] Thread {thread_id}: retrying '{user}' ({exc})")
-                        user_queue.put((idx, user))
+                        if idx not in _completed_set:
+                          user_queue.put((idx, user))
                     else:
                         thread_safe_print(f"[!] Thread {thread_id}: dropped '{user}' after retries")
     
