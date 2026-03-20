@@ -450,12 +450,15 @@ def resolve_domain_interactive(banner, mta_profile, provided_domain=None, target
         print(f"[*] Domain   : {provided_domain} (from -d flag)")
         # Test EHLO — skip if probe already verified a domain match
         if ehlo_caps and "250" in ehlo_caps:
-            print(f"  {GREEN}[+] EHLO capability confirmed during probe{RESET}")
+            if verbose:
+                print(f"  {GREEN}[+] EHLO capability confirmed during probe{RESET}")
         elif target:
-            print(f"[*] Testing EHLO with '{provided_domain}' …")
+            if verbose:
+                print(f"[*] Testing EHLO with '{provided_domain}' …")
             ok, result = test_ehlo(target, port, provided_domain, timeout, verbose)
             if ok:
-                print(f"  {GREEN}[+] EHLO accepted — server responded 250{RESET}")
+                if verbose:
+                    print(f"  {GREEN}[+] EHLO accepted — server responded 250{RESET}")
             else:
                 print(f"  {YELLOW}[!] EHLO warning: {result}{RESET}")
                 if not force:
@@ -494,13 +497,15 @@ def resolve_domain_interactive(banner, mta_profile, provided_domain=None, target
         # Test the EHLO — skip if we already have caps from the probe connection
         if ehlo_caps and ehlo_domain == extract_domain_from_banner(banner):
             # Probe already tested this exact domain — reuse result
-            print(f"  {GREEN}[+] EHLO accepted — verified during probe{RESET}")
+            if verbose:
+                print(f"  {GREEN}[+] EHLO accepted — verified during probe{RESET}")
             break
         elif target:
             print(f"[*] Testing EHLO with '{ehlo_domain}' …")
             ok, result = test_ehlo(target, port, ehlo_domain, timeout, verbose)
             if ok:
-                print(f"  {GREEN}[+] EHLO accepted — server responded 250{RESET}")
+                if verbose:
+                    print(f"  {GREEN}[+] EHLO accepted — server responded 250{RESET}")
                 break
             else:
                 print(f"  {RED}[!] EHLO failed: {result}{RESET}")
@@ -695,7 +700,8 @@ def validate_user(s, methods, user, domain, mail_from, verbose, mta_profile=None
         results[method] = res
 
         if verbose and len(methods) > 1:
-            print(f"    {method}: {res}")
+            if verbose:
+                print(f"    {method}: {res}")
 
         # Hard stops
         if res == "ratelimit":
@@ -751,6 +757,8 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
     for m in methods_to_test:
         if verbose:
             print(f"\n  [*] Testing {m} …")
+        else:
+            print(f"  [*] Testing {m} …", end=" ", flush=True)
         try:
             if m == "VRFY":
                 # Always use plain username for VRFY — avoids false 252 on external domains
