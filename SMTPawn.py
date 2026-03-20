@@ -427,7 +427,7 @@ def test_ehlo(target, port, ehlo_domain, timeout, verbose):
         return False, str(e)
 
 
-def resolve_domain_interactive(banner, mta_profile, provided_domain=None, target=None, port=25, timeout=15.0, verbose=False):
+def resolve_domain_interactive(banner, mta_profile, provided_domain=None, target=None, port=25, timeout=15.0, verbose=False, ehlo_caps=""):
     """
     Determine EHLO domain and RCPT domain after fingerprinting.
     Sanitises input, tests EHLO before proceeding, and asks about RCPT domain separately.
@@ -435,8 +435,10 @@ def resolve_domain_interactive(banner, mta_profile, provided_domain=None, target
     """
     if provided_domain:
         print(f"[*] Domain   : {provided_domain} (from -d flag)")
-        # Still test EHLO with provided domain
-        if target:
+        # Test EHLO — skip if probe already verified a domain match
+        if ehlo_caps and "250" in ehlo_caps:
+            print(f"  {GREEN}[+] EHLO capability confirmed during probe{RESET}")
+        elif target:
             print(f"[*] Testing EHLO with '{provided_domain}' …")
             ok, result = test_ehlo(target, port, provided_domain, timeout, verbose)
             if ok:
@@ -473,8 +475,12 @@ def resolve_domain_interactive(banner, mta_profile, provided_domain=None, target
             raw = input("[?] No domain found in banner. Enter EHLO domain (leave blank for 'pentest.local'): ")
             ehlo_domain = sanitize_domain(raw) or "pentest.local"
 
-        # Test the EHLO
-        if target:
+        # Test the EHLO — skip if we already have caps from the probe connection
+        if ehlo_caps and ehlo_domain == extract_domain_from_banner(banner):
+            # Probe already tested this exact domain — reuse result
+            print(f"  {GREEN}[+] EHLO accepted — verified during probe{RESET}")
+            break
+        elif target:
             print(f"[*] Testing EHLO with '{ehlo_domain}' …")
             ok, result = test_ehlo(target, port, ehlo_domain, timeout, verbose)
             if ok:
@@ -972,58 +978,60 @@ def main():
     # ── Fingerprint MTA first — before asking domain ───────────────────────────
     mta_profile = MTA_DEFAULT_PROFILE
     fp_banner   = ""
-    print(f"\n[*] Fingerprinting target …")
+    # ── Single probe connection: banner + EHLO capabilities ──────────────────
+    # One connection to get everything: banner for MTA fingerprint,
+    # EHLO response for STARTTLS and capabilities. No redundant connections.
+    print(f"\n[*] Probing target …")
+    fp_banner  = ""
+    ehlo_caps  = ""
+    probe_domain = args.domain or "probe.local"  # temp domain just for probe
     try:
-        s_fp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s_fp.settimeout(args.timeout)
-        s_fp.connect((args.target, args.port))
-        fp_banner = s_fp.recv(4096).decode(errors="replace")
-        s_fp.close()
-        mta_profile = fingerprint_mta(fp_banner)
-        mta_name    = mta_profile["name"]
-        if has_banner(fp_banner):
-            print(f"[*] MTA detected : {CYAN}{mta_name}{RESET}")
-            print(f"[*] Banner       : {fp_banner.strip()[:80]}")
-        else:
-            print(f"[*] MTA detected : {CYAN}{mta_name}{RESET}")
-            print(f"  {YELLOW}[!] No informative banner — server may be hardened.{RESET}")
-        print(f"  {YELLOW}[!] {mta_name}: {mta_profile['notes']}{RESET}")
-        cli = sys.argv[1:]
-        if "-m" not in cli and "--method" not in cli:
-            suggested = mta_profile["reliable"]
-            if [suggested] != methods:
-                print(f"  {CYAN}[*] Auto-selecting method {suggested} based on {mta_name} profile.{RESET}")
-                methods = [suggested]
-        for m in methods:
-            if m == "VRFY" and mta_profile["vrfy"] is False:
-                print(f"  {RED}[!] VRFY is known to be disabled on {mta_name} — consider switching to RCPT.{RESET}")
-            if m == "EXPN" and mta_profile["expn"] is False:
-                print(f"  {RED}[!] EXPN is known to be disabled on {mta_name} — consider switching to RCPT.{RESET}")
+        s_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s_probe.settimeout(args.timeout)
+        s_probe.connect((args.target, args.port))
+        fp_banner = s_probe.recv(4096).decode(errors="replace")
+        ehlo_res  = send_cmd(s_probe, f"EHLO {probe_domain}\r\n", False)
+        if not ehlo_res.startswith("250"):
+            ehlo_res = send_cmd(s_probe, f"HELO {probe_domain}\r\n", False)
+        ehlo_caps = ehlo_res
+        s_probe.send(b"QUIT\r\n")
+        s_probe.close()
     except Exception as e:
-        print(f"[!] Fingerprint failed: {e}")
-        mta_name = "Unknown"
+        print(f"[!] Probe failed: {e}")
 
-    # ── Resolve domain — now informed by fingerprint ───────────────────────────
-    domain_result = resolve_domain_interactive(fp_banner, mta_profile, args.domain, args.target, args.port, args.timeout, args.verbose)
+    # ── Fingerprint from banner ────────────────────────────────────────────────
+    mta_profile = fingerprint_mta(fp_banner)
+    mta_name    = mta_profile["name"]
+    if has_banner(fp_banner):
+        print(f"[*] MTA detected : {CYAN}{mta_name}{RESET}")
+        print(f"[*] Banner       : {fp_banner.strip()[:80]}")
+    else:
+        print(f"[*] MTA detected : {CYAN}{mta_name}{RESET}")
+        print(f"  {YELLOW}[!] No informative banner — server may be hardened.{RESET}")
+    print(f"  {YELLOW}[!] {mta_name}: {mta_profile['notes']}{RESET}")
+    cli = sys.argv[1:]
+    if "-m" not in cli and "--method" not in cli:
+        suggested = mta_profile["reliable"]
+        if [suggested] != methods:
+            print(f"  {CYAN}[*] Auto-selecting method {suggested} based on {mta_name} profile.{RESET}")
+            methods = [suggested]
+    for m in methods:
+        if m == "VRFY" and mta_profile["vrfy"] is False:
+            print(f"  {RED}[!] VRFY is known to be disabled on {mta_name} — consider switching to RCPT.{RESET}")
+        if m == "EXPN" and mta_profile["expn"] is False:
+            print(f"  {RED}[!] EXPN is known to be disabled on {mta_name} — consider switching to RCPT.{RESET}")
+
+    # ── Resolve domain — informed by fingerprint ───────────────────────────────
+    # Pass ehlo_caps so resolve_domain_interactive can skip extra EHLO test
+    domain_result = resolve_domain_interactive(fp_banner, mta_profile, args.domain, args.target, args.port, args.timeout, args.verbose, ehlo_caps=ehlo_caps)
     if isinstance(domain_result, tuple):
         domain, rcpt_domain_preset = domain_result
     else:
         domain, rcpt_domain_preset = domain_result, None
     args.domain = domain
 
-    # ── STARTTLS ───────────────────────────────────────────────────────────────
-    starttls_advertised = "STARTTLS" in fp_banner.upper()
-    if not starttls_advertised:
-        try:
-            s_tls = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s_tls.settimeout(args.timeout)
-            s_tls.connect((args.target, args.port))
-            s_tls.recv(4096)
-            ehlo_res = send_cmd(s_tls, f"EHLO {domain}\r\n", False)
-            starttls_advertised = "STARTTLS" in ehlo_res.upper()
-            s_tls.close()
-        except Exception:
-            pass
+    # ── STARTTLS — from probe EHLO response, no extra connection needed ────────
+    starttls_advertised = "STARTTLS" in ehlo_caps.upper() or "STARTTLS" in fp_banner.upper()
     if starttls_advertised:
         print(f"[*] STARTTLS     : {GREEN}advertised by server{RESET}")
         cli = sys.argv[1:]
