@@ -1263,7 +1263,7 @@ def main():
     if not all_users:
         print("[!] Error: provide at least -u <user>, --name <n>, or -w <wordlist>.")
         sys.exit(1)
-    len(all_users)
+    total = len(all_users)
     # ── Pre-flight ─────────────────────────────────────────────────────────────
     if not resumed_session:
       if args.no_preflight:
