@@ -268,19 +268,37 @@ def preflight_check(target, port, domain, method, timeout, verbose, preflight_mo
         reliable = [m for m, r in results.items() if r == "invalid"]
 
         if reliable:
-            # There is a better method — suggest switching
-            suggestion = reliable[0]
-            choice = input(f"[?] Switch to {suggestion} (more reliable)? [y/n] (default: y): ").strip().lower()
-            if choice in ("", "y", "yes"):
-                print(f"[*] Switched method to: {suggestion}")
-                return suggestion
+            if len(reliable) == 1:
+                # Only one reliable method — suggest it directly
+                print(f"[*] More reliable method available: {reliable[0]}")
+                choice = input(f"[?] Switch to {reliable[0]}? [y/n] (default: y): ").strip().lower()
+                if choice in ("", "y", "yes"):
+                    print(f"[*] Switched method to: {reliable[0]}")
+                    return reliable[0]
             else:
-                # User wants to keep original method — ask if they want to proceed anyway
-                proceed = input(f"[?] Proceed with {method} anyway (results may be unreliable)? [y/n] (default: y): ").strip().lower()
-                if proceed not in ("", "y", "yes"):
-                    print("[!] Aborting — rerun with a different method.")
-                    sys.exit(0)
-                print(f"[*] Proceeding with {method} — expect false positives.")
+                # Multiple reliable methods — let user pick
+                print(f"[*] Multiple reliable methods available:")
+                for i, m in enumerate(reliable, 1):
+                    print(f"    [{i}] {m}")
+                print(f"    [0] Keep current method ({method})")
+                pick = input(f"[?] Choose method (default: 1): ").strip()
+                if pick == "0":
+                    pass  # fall through to proceed prompt
+                else:
+                    try:
+                        idx = int(pick) - 1 if pick else 0
+                        selected = reliable[idx]
+                        print(f"[*] Switched method to: {selected}")
+                        return selected
+                    except (ValueError, IndexError):
+                        print(f"[!] Invalid choice — keeping {method}")
+
+            # User chose to keep original — ask if they want to proceed
+            proceed = input(f"[?] Proceed with {method} anyway (results may be unreliable)? [y/n] (default: y): ").strip().lower()
+            if proceed not in ("", "y", "yes"):
+                print("[!] Aborting — rerun with a different method.")
+                sys.exit(0)
+            print(f"[*] Proceeding with {method} — expect false positives.")
         else:
             # No reliable method found at all
             print("[!] No reliable method found — all methods appear unreliable on this server.")
