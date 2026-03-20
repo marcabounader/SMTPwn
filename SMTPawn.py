@@ -9,6 +9,7 @@ import string
 import json
 import csv
 import os
+from itertools import combinations
 
 # ─────────────────────────────────────────────────────────
 #  SMTPwn — SMTP User Enumerator & Relay Tester
@@ -688,99 +689,81 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
         marker = "  ◄ selected" if m in methods else ""
         print(f"    {m:<6} : {status}{marker}")
 
-    selected_results  = [results.get(m, "error") for m in methods]
-    all_reliable      = all(r == "invalid" for r in selected_results)
-    reliable          = [m for m, r in results.items() if r == "invalid"]
-    other_reliable    = [m for m in reliable if m not in methods]
+    selected_results = [results.get(m, "error") for m in methods]
+    all_reliable     = all(r == "invalid" for r in selected_results)
+    reliable         = [m for m, r in results.items() if r == "invalid"]
+    other_reliable   = [m for m in reliable if m not in methods]
 
-    if all_reliable:
-        print(f"\n{GREEN}[+] Selected method(s) {','.join(methods)} look reliable.{RESET}")
-
-        if other_reliable:
-            # Selected is reliable but other reliable methods also exist — offer options
-            print(f"[*] Other reliable method(s) also found: {', '.join(other_reliable)}")
-            print(f"    [1] Keep {','.join(methods)} (current)")
-            for i, m in enumerate(other_reliable, 2):
-                print(f"    [{i}] Switch to {m}")
-            # Offer combinations
-            combos = []
-            for m in other_reliable:
-                combo = sorted(set(methods + [m]))
-                combos.append(combo)
-                print(f"    [{len(other_reliable) + combos.index(combo) + 2}] Use {','.join(combo)} (must pass both)")
-            if len(reliable) > 1:
-                all_combo = sorted(reliable)
-                print(f"    [{len(other_reliable) + len(combos) + 2}] Use all reliable: {','.join(all_combo)}")
-
-            pick = input(f"[?] Choose (default: 1 — keep current): ").strip()
-            if pick == "" or pick == "1":
-                print(f"[*] Keeping {','.join(methods)}")
-                return methods
-            try:
-                idx = int(pick)
-                # Single switch
-                if 2 <= idx <= len(other_reliable) + 1:
-                    chosen = other_reliable[idx - 2]
-                    print(f"[*] Switched to: {chosen}")
-                    return [chosen]
-                # Combo
-                combo_idx = idx - len(other_reliable) - 2
-                if 0 <= combo_idx < len(combos):
-                    chosen = combos[combo_idx]
-                    print(f"[*] Using combination: {','.join(chosen)}")
-                    return chosen
-                # All reliable
-                if idx == len(other_reliable) + len(combos) + 2:
-                    print(f"[*] Using all reliable: {','.join(all_combo)}")
-                    return all_combo
-            except (ValueError, IndexError):
-                print(f"[!] Invalid choice — keeping {','.join(methods)}")
-        else:
-            print(f"[*] No other reliable methods found — proceeding with {','.join(methods)}.")
-
+    # ── Case 1: selected is reliable, nothing else reliable ───────────────────
+    if all_reliable and not other_reliable:
+        print(f"\n{GREEN}[+] Selected method(s) {','.join(methods)} look reliable — proceeding.{RESET}")
         return methods
 
-    # Selected method(s) not fully reliable
-    print(f"\n{YELLOW}[!] WARNING: one or more selected methods ({','.join(methods)}) may produce unreliable results.{RESET}")
+    # ── Case 2: selected is unreliable, nothing else reliable ─────────────────
+    if not reliable:
+        print(f"\n{YELLOW}[!] WARNING: selected method(s) ({','.join(methods)}) unreliable.{RESET}")
+        print(f"[!] No reliable method found on this server.")
+        proceed = input(f"[?] Proceed anyway with {','.join(methods)} (expect false positives)? [y/n] (default: y): ").strip().lower()
+        if proceed not in ("", "y", "yes"):
+            print("[!] Aborting.")
+            sys.exit(0)
+        return methods
 
-    if reliable:
-        print(f"[*] Reliable method(s) found: {', '.join(reliable)}")
-        print(f"    [0] Keep current ({','.join(methods)}) — proceed anyway")
-        for i, m in enumerate(reliable, 1):
-            print(f"    [{i}] Switch to {m}")
-        combos = []
-        if len(reliable) > 1:
-            for m in reliable:
-                combo = sorted(reliable)
-                if combo not in combos:
-                    combos.append(combo)
-                    print(f"    [{len(reliable) + len(combos)}] Use all reliable: {','.join(combo)}")
+    # ── Case 3: other reliable options exist (selected may be reliable or not) ─
+    if all_reliable:
+        print(f"\n{GREEN}[+] Selected method(s) {','.join(methods)} look reliable.{RESET}")
+    else:
+        print(f"\n{YELLOW}[!] WARNING: selected method(s) ({','.join(methods)}) may be unreliable.{RESET}")
+    print(f"[*] Reliable method(s) available: {', '.join(reliable)}")
 
-        pick = input(f"[?] Choose (default: 1): ").strip()
-        if pick == "0":
-            proceed = input(f"[?] Proceed with {','.join(methods)} (expect false positives)? [y/n] (default: y): ").strip().lower()
-            if proceed not in ("", "y", "yes"):
-                print("[!] Aborting.")
-                sys.exit(0)
-            return methods
-        try:
-            idx = int(pick) if pick else 1
-            if 1 <= idx <= len(reliable):
-                chosen = reliable[idx - 1]
-                print(f"[*] Switched to: {chosen}")
-                return [chosen]
-            combo_idx = idx - len(reliable) - 1
-            if 0 <= combo_idx < len(combos):
-                chosen = combos[combo_idx]
-                print(f"[*] Using combination: {','.join(chosen)}")
-                return chosen
-        except (ValueError, IndexError):
+    # Build options list
+    options = []
+
+    # Option 1: keep selected (only show if selected is reliable)
+    if all_reliable:
+        options.append((methods, f"Keep {','.join(methods)} (current)"))
+
+    # Singular alternatives (other reliable ones not already selected)
+    for m in other_reliable:
+        options.append(([m], f"{m} only"))
+
+    # All pair combinations from reliable pool (skip if only 1 reliable)
+    if len(reliable) > 1:
+        for r in range(2, len(reliable) + 1):
+            for combo in combinations(reliable, r):
+                combo_list = sorted(combo)
+                # Skip if already listed as singular or keep
+                if combo_list not in [o[0] for o in options]:
+                    label = f"{','.join(combo_list)} — must pass all" if r > 1 else f"{combo_list[0]} only"
+                    options.append((combo_list, label))
+
+    print(f"")
+    for i, (_, label) in enumerate(options, 1):
+        print(f"    [{i}] {label}")
+    if not all_reliable:
+        print(f"    [0] Keep {','.join(methods)} anyway (unreliable, expect false positives)")
+
+    default = "1"
+    pick = input(f"[?] Choose (default: {default}): ").strip()
+
+    if pick == "0" and not all_reliable:
+        proceed = input(f"[?] Proceed with {','.join(methods)} (expect false positives)? [y/n] (default: y): ").strip().lower()
+        if proceed not in ("", "y", "yes"):
+            print("[!] Aborting.")
+            sys.exit(0)
+        return methods
+
+    try:
+        idx = (int(pick) - 1) if pick else 0
+        if 0 <= idx < len(options):
+            chosen, label = options[idx]
+            print(f"[*] Using: {label}")
+            return chosen
+        else:
             print(f"[!] Invalid choice — keeping {','.join(methods)}")
+    except ValueError:
+        print(f"[!] Invalid choice — keeping {','.join(methods)}")
 
-    proceed = input(f"[?] Proceed with {','.join(methods)} anyway (expect false positives)? [y/n] (default: y): ").strip().lower()
-    if proceed not in ("", "y", "yes"):
-        print("[!] Aborting.")
-        sys.exit(0)
     return methods
 
 
