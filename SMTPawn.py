@@ -713,7 +713,7 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
     s, _ = connect_and_init(target, port, domain, timeout, verbose, use_starttls, no_starttls, auth_user, auth_pass)
     if not s:
         print("[!] Pre-flight connection failed — continuing anyway.")
-        return methods
+        return methods, rcpt_domain
 
     # Small pause after TLS handshake to let server settle
     time.sleep(0.5)
@@ -736,8 +736,26 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
                     print(f"  {GRAY}[*] VRFY garbage: {garbage_plain}{RESET}")
                 res = check_vrfy(s, garbage_plain, verbose, mta_profile)
             elif m == "RCPT":
+                # If rcpt_domain not set yet, ask now before testing
+                if rcpt_domain is None and "RCPT" not in methods:
+                    print(f"\n  {CYAN}[*] RCPT is being tested — need to know domain format{RESET}")
+                    rcpt_fmt = mta_profile.get("rcpt_format", "both") if mta_profile else "both"
+                    default_c = "1" if rcpt_fmt != "plain" else "3"
+                    rc = input(f"  [?] RCPT TO domain for test?\n"
+                               f"      [1] Use EHLO domain ({domain})\n"
+                               f"      [2] Different domain\n"
+                               f"      [3] No domain — plain username\n"
+                               f"      Choice (default: {default_c}): ").strip()
+                    if rc == "2":
+                        raw = input("  [?] Enter domain: ").strip().strip('"\'').strip()
+                        rcpt_domain = raw if raw else domain
+                    elif rc == "3" or (rc == "" and default_c == "3"):
+                        rcpt_domain = None
+                    else:
+                        rcpt_domain = domain
+                    garbage_rcpt = f"{garbage_plain}@{rcpt_domain}" if rcpt_domain else garbage_plain
                 if verbose:
-                    print(f"  {GRAY}[*] RCPT garbage: {garbage_rcpt}{RESET}")
+                    print(f"  {GRAY}[*] RCPT garbage: {garbage_rcpt if rcpt_domain else garbage_plain}{RESET}")
                 res = check_rcpt(s, garbage_plain, rcpt_domain, mail_from, verbose, mta_profile)
             elif m == "EXPN":
                 res, _ = check_expn(s, garbage_plain, verbose, mta_profile)
@@ -781,7 +799,7 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
     # ── Case 1: selected is reliable, nothing else reliable ───────────────────
     if all_reliable and not other_reliable:
         print(f"\n{GREEN}[+] Selected method(s) {','.join(methods)} look reliable — proceeding.{RESET}")
-        return methods
+        return methods, rcpt_domain
 
     # ── Case 2: selected is unreliable, nothing else reliable ─────────────────
     if not reliable:
@@ -791,7 +809,7 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
         if proceed not in ("", "y", "yes"):
             print("[!] Aborting.")
             sys.exit(0)
-        return methods
+        return methods, rcpt_domain
 
     # ── Case 3: other reliable options exist (selected may be reliable or not) ─
     if all_reliable:
@@ -835,7 +853,7 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
         if proceed not in ("", "y", "yes"):
             print("[!] Aborting.")
             sys.exit(0)
-        return methods
+        return methods, rcpt_domain
 
     try:
         idx = (int(pick) - 1) if pick else 0
@@ -848,7 +866,7 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
     except ValueError:
         print(f"[!] Invalid choice — keeping {','.join(methods)}")
 
-    return methods
+    return methods, rcpt_domain
 
 
 # ── Checkpoint helpers ─────────────────────────────────────────────────────────
@@ -1095,11 +1113,11 @@ def main():
 
         if run_preflight:
             # Resolve preflight rcpt_domain:
-            # ASK_LATER = RCPT not in initial methods, use None for preflight
-            # None = -d provided, RCPT format not yet decided, use None
-            # anything else = already decided by user earlier
+            # ASK_LATER = RCPT not in initial methods — preflight will ask if needed
+            # None = -d provided, not yet decided — preflight will ask if needed
+            # anything else = already decided by user
             pf_rcpt_domain = None if rcpt_domain_preset in (None, "ASK_LATER") else rcpt_domain_preset
-            methods = preflight_check(
+            methods, pf_rcpt_result = preflight_check(
                 args.target, args.port, domain,
                 methods, args.timeout, args.verbose,
                 mail_from,
@@ -1108,6 +1126,9 @@ def main():
                 mta_profile=mta_profile,
                 rcpt_domain=pf_rcpt_domain
             )
+            # If preflight asked and set rcpt_domain, use it — skip asking again
+            if pf_rcpt_result is not None:
+                rcpt_domain_preset = pf_rcpt_result
 
     # ── RCPT format — ask only if RCPT is in final methods ───────────────────
     def ask_rcpt_domain(domain, mta_profile):
