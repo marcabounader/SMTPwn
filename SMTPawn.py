@@ -160,16 +160,7 @@ MTA_DEFAULT_PROFILE = {
 RATELIMIT_CODES = {"421", "450", "451", "452"}
 
 # Username format templates — {f}=first, {l}=last, {u}=username
-USERNAME_FORMATS = [
-    "{u}",
-    "{f}.{l}",
-    "{f}{l}",
-    "{f}_{l}",
-    "{f[0]}{l}",
-    "{f[0]}.{l}",
-    "{f}",
-    "{l}",
-]
+# USERNAME_FORMATS no longer used — variations generated directly in generate_username_variations()
 
 
 # ── Args ───────────────────────────────────────────────────────────────────────
@@ -256,14 +247,24 @@ def generate_username_variations(full_name):
     if len(parts) < 2:
         return [parts[0]] if parts else []
     first, last = parts[0], parts[-1]
-    variations = []
-    for fmt in USERNAME_FORMATS:
-        try:
-            u = fmt.format(f=first, l=last, u=first, **{"f[0]": first[0]})
-            if u not in variations:
-                variations.append(u)
-        except (KeyError, IndexError):
-            pass
+    fi = first[0] if first else ""
+    templates = [
+        first,
+        last,
+        f"{first}.{last}",
+        f"{first}{last}",
+        f"{first}_{last}",
+        f"{fi}{last}",
+        f"{fi}.{last}",
+        f"{fi}_{last}",
+        f"{last}.{first}",
+        f"{last}{first}",
+    ]
+    seen_v, variations = set(), []
+    for u in templates:
+        if u and u not in seen_v:
+            seen_v.add(u)
+            variations.append(u)
     return variations
 
 
@@ -704,8 +705,7 @@ def validate_user(s, methods, user, domain, mail_from, verbose, mta_profile=None
         results[method] = res
 
         if verbose and len(methods) > 1:
-            if verbose:
-                print(f"    {method}: {res}")
+            print(f"    {method}: {res}")
 
         # Hard stops
         if res == "ratelimit":
@@ -739,13 +739,14 @@ def validate_user(s, methods, user, domain, mail_from, verbose, mta_profile=None
 # ── Pre-flight ─────────────────────────────────────────────────────────────────
 
 def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, use_starttls, no_starttls, auth_user, auth_pass, preflight_mode="all", mta_profile=None, rcpt_domain=None, force=False, no_method_switch=False):
+    _rcpt_domain_set_by_preflight = rcpt_domain is not None  # track if it was already set
     methods_to_test = ["VRFY", "RCPT", "EXPN"] if preflight_mode == "all" else methods
     print(f"\n[*] Pre-flight: testing {preflight_mode} method(s) with garbage user …")
 
     s, _ = connect_and_init(target, port, domain, timeout, verbose, use_starttls, no_starttls, auth_user, auth_pass)
     if not s:
         print("[!] Pre-flight connection failed — continuing anyway.")
-        return methods, rcpt_domain
+        return methods, (rcpt_domain if _rcpt_domain_set_by_preflight else "ASK_LATER")
 
     # Small pause after TLS handshake to let server settle
     time.sleep(0.5)
@@ -788,6 +789,7 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
                     else:
                         rcpt_domain = domain
                     garbage_rcpt = f"{garbage_plain}@{rcpt_domain}" if rcpt_domain else garbage_plain
+                    _rcpt_domain_set_by_preflight = True
                 if verbose:
                     print(f"  {GRAY}[*] RCPT garbage: {garbage_rcpt if rcpt_domain else garbage_plain}{RESET}")
                 res = check_rcpt(s, garbage_plain, rcpt_domain, mail_from, verbose, mta_profile)
@@ -833,7 +835,7 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
     # ── Case 1: selected is reliable, nothing else reliable ───────────────────
     if all_reliable and not other_reliable:
         print(f"\n{GREEN}[+] Selected method(s) {','.join(methods)} look reliable — proceeding.{RESET}")
-        return methods, rcpt_domain
+        return methods, (rcpt_domain if _rcpt_domain_set_by_preflight else "ASK_LATER")
 
     # ── Case 2: selected is unreliable, nothing else reliable ─────────────────
     if not reliable:
@@ -846,7 +848,7 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
                 sys.exit(0)
         else:
             print(f"[*] --force set — proceeding with {','.join(methods)} despite unreliable results.")
-        return methods, rcpt_domain
+        return methods, (rcpt_domain if _rcpt_domain_set_by_preflight else "ASK_LATER")
 
     # ── Case 3: other reliable options exist (selected may be reliable or not) ─
     if all_reliable:
@@ -859,7 +861,7 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
     if no_method_switch:
         if all_reliable:
             print(f"[*] --no-method-switch: keeping {','.join(methods)}")
-            return methods, rcpt_domain
+            return methods, (rcpt_domain if _rcpt_domain_set_by_preflight else "ASK_LATER")
         else:
             chosen = reliable[0] if reliable else methods
             print(f"[*] --no-method-switch: auto-selecting {','.join(chosen) if isinstance(chosen,list) else chosen}")
@@ -903,7 +905,7 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
                 sys.exit(0)
         else:
             print(f"[*] --force set — proceeding with {','.join(methods)}.")
-        return methods, rcpt_domain
+        return methods, (rcpt_domain if _rcpt_domain_set_by_preflight else "ASK_LATER")
 
     try:
         idx = (int(pick) - 1) if pick else 0
@@ -916,31 +918,27 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
     except ValueError:
         print(f"[!] Invalid choice — keeping {','.join(methods)}")
 
-    return methods, rcpt_domain
+    return methods, (rcpt_domain if _rcpt_domain_set_by_preflight else "ASK_LATER")
 
 
 # ── Checkpoint helpers ─────────────────────────────────────────────────────────
 
 CHECKPOINT_FILE = ".smtpwn_checkpoint"
 
-def save_checkpoint(index, total, target):
-    with open(CHECKPOINT_FILE, "w") as f:
-        json.dump({"index": index, "total": total, "target": target}, f)
-
-
 def load_checkpoint(target):
     if not os.path.exists(CHECKPOINT_FILE):
-        return 0
+        return 0, set()
     try:
         with open(CHECKPOINT_FILE) as f:
             data = json.load(f)
         if data.get("target") == target:
-            idx = data.get("index", 0)
-            print(f"{YELLOW}[*] Resuming from user {idx + 1} (checkpoint found){RESET}")
-            return idx
+            idx       = data.get("index", 0)
+            completed = set(data.get("completed", list(range(idx))))
+            print(f"{YELLOW}[*] Resuming from index {idx} ({len(completed)} users already done){RESET}")
+            return idx, completed
     except Exception:
         pass
-    return 0
+    return 0, set()
 
 
 def clear_checkpoint():
@@ -958,47 +956,69 @@ def method_tag(mr):
     return f" [{' '.join(parts)}]"
 
 
-def save_result(entry, output_file, fmt):
-    """Save a result entry to file in the specified format."""
-    method_results = entry.get("method_results", {})
-    # Build tag string: VRFY:valid RCPT:potential
-    tag = " | ".join(f"{m}:{r}" for m, r in method_results.items()) if method_results else ""
+# File-level lock for safe concurrent writes
+_file_lock = threading.Lock()
 
-    if fmt == "txt":
-        with open(output_file, "a") as f:
-            line = entry["username"]
-            if tag:
-                line += f"  [{tag}]"
-            f.write(line + "\n")
-            if entry.get("expn_expanded"):
-                for addr in entry["expn_expanded"]:
-                    f.write(f"  expands_to: {addr}\n")
+# Thread-safe completed set for accurate resume
+_completed_lock = threading.Lock()
+_completed_set  = set()   # indices of fully processed users
 
-    elif fmt == "json":
-        data = []
-        if os.path.exists(output_file):
-            try:
-                with open(output_file) as f:
-                    data = json.load(f)
-            except Exception:
-                data = []
-        data.append(entry)
-        with open(output_file, "w") as f:
+def mark_completed(idx):
+    with _completed_lock:
+        _completed_set.add(idx)
+
+def save_checkpoint_threadsafe(total, target, session_config=None):
+    """Save progress + session config so resume uses identical settings."""
+    with _completed_lock:
+        i = 0
+        while i in _completed_set:
+            i += 1
+        data = {
+            "index":     i,
+            "total":     total,
+            "target":    target,
+            "completed": sorted(_completed_set),
+        }
+        if session_config:
+            data["session"] = session_config
+        with open(CHECKPOINT_FILE, "w") as f:
             json.dump(data, f, indent=2)
 
-    elif fmt == "csv":
-        file_exists = os.path.exists(output_file)
-        with open(output_file, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["username", "status", "methods", "method_results", "expn_expanded"])
-            if not file_exists:
-                writer.writeheader()
-            writer.writerow({
-                "username":       entry["username"],
-                "status":         entry["status"],
-                "methods":        ",".join(entry.get("methods", [])),
-                "method_results": " | ".join(f"{m}:{r}" for m,r in method_results.items()) if method_results else "",
-                "expn_expanded":  ",".join(entry.get("expn_expanded", []))
-            })
+def save_result(entry, output_file, fmt):
+    """Save a result entry to file atomically — safe for concurrent threads."""
+    method_results = entry.get("method_results", {})
+    tag = " | ".join(f"{m}:{r}" for m, r in method_results.items()) if method_results else ""
+
+    with _file_lock:
+        if fmt == "txt":
+            with open(output_file, "a") as f:
+                line = entry["username"]
+                if tag:
+                    line += f"  [{tag}]"
+                f.write(line + "\n")
+                if entry.get("expn_expanded"):
+                    for addr in entry["expn_expanded"]:
+                        f.write(f"  expands_to: {addr}\n")
+
+        elif fmt == "json":
+            # Append-safe JSON: use newline-delimited JSON (one object per line)
+            # More robust than read-modify-write under concurrent access
+            with open(output_file, "a") as f:
+                f.write(json.dumps(entry) + "\n")
+
+        elif fmt == "csv":
+            file_exists = os.path.exists(output_file)
+            with open(output_file, "a", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["username", "status", "methods", "method_results", "expn_expanded"])
+                if not file_exists:
+                    writer.writeheader()
+                writer.writerow({
+                    "username":       entry["username"],
+                    "status":         entry["status"],
+                    "methods":        ",".join(entry.get("methods", [])),
+                    "method_results": " | ".join(f"{m}:{r}" for m,r in method_results.items()) if method_results else "",
+                    "expn_expanded":  ",".join(entry.get("expn_expanded", []))
+                })
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
@@ -1116,57 +1136,125 @@ def main():
         if args.starttls:
             print(f"  {YELLOW}[!] --starttls forced but server did not advertise it{RESET}")
 
-    # mail_from resolved after preflight — placeholder for now
-    mail_from = args.mail_from or None
+    # ── MAIL FROM — preliminary resolve for preflight use ────────────────────
+    # Full resolve happens after preflight (methods/rcpt_domain may change)
+    # For preflight we use --mail-from if set, otherwise a generic placeholder
+    mail_from = args.mail_from if args.mail_from else f"noreply@{domain}"
 
-    # ── Build user list ────────────────────────────────────────────────────────
+    # ── Build user list — stream line by line, deduplicate as we go ──────────
+    seen      = set()
     all_users = []
+
+    def add_user(u):
+        u = u.strip()
+        if u and u not in seen:
+            seen.add(u)
+            all_users.append(u)
+
     if args.user:
-        all_users.append(args.user.strip())
+        add_user(args.user)
 
     if args.name:
         variations = generate_username_variations(args.name)
         print(f"[*] Generated {len(variations)} username variations from '{args.name}':")
         for v in variations:
             print(f"    {v}")
-        all_users.extend(variations)
+            add_user(v)
 
     if args.wordlist:
         try:
             with open(args.wordlist, "r", errors="ignore") as fh:
-                all_users.extend([ln.strip() for ln in fh if ln.strip()])
+                for line in fh:          # one line at a time — no full load
+                    add_user(line)
         except FileNotFoundError:
             print(f"[!] Wordlist not found: {args.wordlist}")
             sys.exit(1)
 
     if not all_users:
-        print("[!] Error: provide at least -u <user>, --name <name>, or -w <wordlist>.")
+        print("[!] Error: provide at least -u <user>, --name <n>, or -w <wordlist>.")
         sys.exit(1)
 
-    # Deduplicate
-    seen, unique_users = set(), []
-    for u in all_users:
-        if u not in seen:
-            seen.add(u)
-            unique_users.append(u)
-    all_users = unique_users
-
     # ── Resume checkpoint ──────────────────────────────────────────────────────
-    start_index = 0
+    start_index    = 0
+    session_config = {}  # will be built later; placeholder here
+
     if args.resume:
-        start_index = load_checkpoint(args.target)
+        if os.path.exists(CHECKPOINT_FILE):
+            try:
+                with open(CHECKPOINT_FILE) as _cf:
+                    _ckpt = json.load(_cf)
+
+                if _ckpt.get("target") == args.target or not args.target:
+                    _done    = _ckpt.get("index", 0)
+                    _total   = _ckpt.get("total", 0)
+                    _session = _ckpt.get("session", {})
+
+                    print(f"\n{YELLOW}[*] Checkpoint found — resuming session{RESET}")
+                    print(f"[*] Target   : {_session.get('target', args.target)}:{_session.get('port', args.port)}")
+                    print(f"[*] Progress : {_done}/{_total} users completed")
+                    print(f"[*] Method(s): {','.join(_session.get('methods', [args.method]))}")
+                    print(f"[*] Domain   : {_session.get('domain', '-')}")
+                    print(f"[*] Wordlist : {_session.get('wordlist', '-')}")
+                    print(f"[*] Output   : {_session.get('output', args.output)}")
+                    print(f"[*] Timing   : T{_session.get('timing', args.timing)}")
+                    print(f"[*] Threads  : {_session.get('threads', 1)}")
+
+                    _ans = safe_input(f"\n[?] Resume with these exact settings? [y/n] (default: y): ").strip().lower()
+                    if _ans not in ("", "y", "yes"):
+                        print("[*] Starting fresh — checkpoint ignored.")
+                        clear_checkpoint()
+                    else:
+                        # Restore all session settings from checkpoint
+                        if _session:
+                            args.target        = _session.get("target",        args.target)
+                            args.port          = _session.get("port",          args.port)
+                            args.output        = _session.get("output",        args.output)
+                            args.output_format = _session.get("output_format", args.output_format)
+                            args.timing        = _session.get("timing",        args.timing)
+                            args.threads       = _session.get("threads",       args.threads)
+                            args.batch         = _session.get("batch",         args.batch)
+                            args.delay         = _session.get("delay",         args.delay)
+                            args.timeout       = _session.get("timeout",       args.timeout)
+                            args.starttls      = _session.get("starttls",      args.starttls)
+                            args.no_starttls   = _session.get("no_starttls",   args.no_starttls)
+                            args.auth_user     = _session.get("auth_user",     args.auth_user)
+                            args.verbose       = _session.get("verbose",       args.verbose)
+                            # Restore scan-phase settings
+                            domain        = _session.get("domain",      domain if "domain" in dir() else "pentest.local")
+                            methods       = _session.get("methods",     [args.method])
+                            rcpt_domain   = _session.get("rcpt_domain", None)
+                            mail_from     = _session.get("mail_from",   None)
+                            # Restore wordlist path and reload user list
+                            if _session.get("wordlist"):
+                                args.wordlist = _session["wordlist"]
+                                # Reload users from restored wordlist
+                                seen.clear()
+                                all_users.clear()
+                                try:
+                                    with open(args.wordlist, "r", errors="ignore") as _wf:
+                                        for _line in _wf:
+                                            _u = _line.strip()
+                                            if _u and _u not in seen:
+                                                seen.add(_u)
+                                                all_users.append(_u)
+                                except FileNotFoundError:
+                                    print(f"{YELLOW}[!] Restored wordlist not found: {args.wordlist}{RESET}")
+
+                        start_index, restored = load_checkpoint(args.target)
+                        with _completed_lock:
+                            _completed_set.update(restored)
+                        print(f"{GREEN}[+] Session restored — continuing from user {start_index + 1}{RESET}")
+                else:
+                    print(f"{YELLOW}[!] Checkpoint is for a different target — starting fresh.{RESET}")
+                    clear_checkpoint()
+            except Exception as e:
+                print(f"{YELLOW}[!] Could not read checkpoint: {e} — starting fresh.{RESET}")
+        else:
+            print(f"{YELLOW}[!] --resume set but no checkpoint file found — starting fresh.{RESET}")
 
     total = len(all_users)
 
-    print(f"\n[*] Target   : {args.target}:{args.port}")
-    print(f"[*] EHLO     : {domain}")
-    print(f"[*] Users    : {total}{f' (resuming from {start_index + 1})' if start_index else ''}")
-    print(f"[*] Output   : {args.output}")
-    print(f"[*] Format   : {args.output_format}")
-    if args.starttls:
-        print(f"[*] STARTTLS : forced")
-    if args.auth_user:
-        print(f"[*] AUTH     : {args.auth_user}")
+    # Session details shown after preflight — see scan config block below
 
     # ── Pre-flight ─────────────────────────────────────────────────────────────
     if args.no_preflight:
@@ -1204,9 +1292,10 @@ def main():
                 force=args.force,
                 no_method_switch=args.no_method_switch
             )
-            # If preflight asked and set rcpt_domain, use it — skip asking again
-            if pf_rcpt_result is not None:
-                rcpt_domain_preset = pf_rcpt_result
+            # If preflight set rcpt_domain (even to None for plain username), use it
+            # Use sentinel "ASK_LATER" to mean "not set by preflight"
+            if pf_rcpt_result != "ASK_LATER":
+                rcpt_domain_preset = pf_rcpt_result  # may be None (plain) or a domain string
 
     # ── RCPT format — ask only if RCPT is in final methods ───────────────────
     def ask_rcpt_domain(domain, mta_profile):
@@ -1245,27 +1334,72 @@ def main():
     elif rcpt_domain_preset is None and "RCPT" in methods:
         rcpt_domain = ask_rcpt_domain(domain, mta_profile)
 
-    # ── MAIL FROM — resolved after preflight and RCPT domain are finalised ──────
+    # ── MAIL FROM — final resolve after preflight and RCPT domain settled ───────
     if args.mail_from:
-        mail_from = args.mail_from
+        mail_from = args.mail_from                      # --mail-from always wins
     elif "RCPT" not in methods:
-        mail_from = f"noreply@{domain}"
+        mail_from = f"noreply@{domain}"                 # VRFY/EXPN only — not actually sent
     elif rcpt_domain:
-        mail_from = f"noreply@{rcpt_domain}"
+        mail_from = f"noreply@{rcpt_domain}"            # match RCPT domain for consistency
     else:
-        mail_from = f"noreply@{domain}"
+        mail_from = f"noreply@{domain}"                 # plain username mode — use EHLO domain
 
-    # ── Final scan summary ─────────────────────────────────────────────────────
-    print(f"\n[*] ── Scan configuration ─────────────────────────")
+    # ── Final session + scan summary ──────────────────────────────────────────
+    print(f"\n[*] ── Session ────────────────────────────────────")
+    print(f"[*] Target   : {args.target}:{args.port}")
+    print(f"[*] EHLO     : {domain}")
+    if args.wordlist:
+        print(f"[*] Wordlist : {args.wordlist}")
+    if args.user:
+        print(f"[*] User     : {args.user}")
+    if args.name:
+        print(f"[*] Name     : {args.name}")
+    print(f"[*] Users    : {total}{f' (resuming from {start_index + 1})' if start_index else ''}")
+    print(f"[*] Output   : {args.output} ({args.output_format})")
+    if args.starttls:
+        print(f"[*] STARTTLS : forced")
+    elif getattr(args, 'no_starttls', False):
+        print(f"[*] STARTTLS : disabled")
+    elif starttls_advertised:
+        print(f"[*] STARTTLS : enabled (auto)")
+    else:
+        print(f"[*] STARTTLS : not available")
+    if args.auth_user:
+        print(f"[*] AUTH     : {args.auth_user}")
+    if args.threads > 1:
+        print(f"[*] Threads  : {args.threads}")
+    print(f"[*] ── Scan config ─────────────────────────────────")
     print(f"[*] Method(s) : {','.join(methods)}")
     rcpt_fmt_str = f"user@{rcpt_domain}" if rcpt_domain else "plain username (no @domain)"
-    print(f"[*] RCPT fmt  : {rcpt_fmt_str if 'RCPT' in methods else 'N/A — RCPT not in methods'}")
+    print(f"[*] RCPT fmt  : {rcpt_fmt_str if 'RCPT' in methods else 'N/A'}")
     print(f"[*] MAIL FROM : {mail_from}{' (--mail-from)' if args.mail_from else ' (auto)'}")
     print(f"[*] ───────────────────────────────────────────────")
 
     print()
     print("[*] Waiting 3s before scan to avoid rate limiting …")
     time.sleep(3)
+
+    # ── Build session config for checkpoint ───────────────────────────────────
+    session_config = {
+        "target":        args.target,
+        "port":          args.port,
+        "domain":        domain,
+        "methods":       methods,
+        "rcpt_domain":   rcpt_domain,
+        "mail_from":     mail_from,
+        "output":        args.output,
+        "output_format": args.output_format,
+        "timing":        args.timing,
+        "threads":       args.threads,
+        "batch":         args.batch,
+        "delay":         args.delay,
+        "timeout":       args.timeout,
+        "starttls":      args.starttls,
+        "no_starttls":   args.no_starttls,
+        "auth_user":     args.auth_user,
+        "wordlist":      args.wordlist,
+        "verbose":       args.verbose,
+    }
 
     # ── Scan ───────────────────────────────────────────────────────────────────
     num_threads   = max(1, args.threads)
@@ -1282,9 +1416,13 @@ def main():
     counts         = {"valid": 0, "potential": 0}
     global_delay   = [args.delay]       # mutable so threads can share rate limit state
 
-    # Fill the queue with users to test (skip already done via checkpoint)
+    # Fill the queue — skip already completed users from checkpoint
     for i in range(start_index, total):
-        user_queue.put((i, all_users[i]))
+        if i not in _completed_set:
+            user_queue.put((i, all_users[i]))
+    queued = user_queue.qsize()
+    if queued < (total - start_index):
+        print(f"[*] Skipped {total - start_index - queued} already completed users (checkpoint)")
 
     def thread_safe_print(*a, **kw):
         with print_lock:
@@ -1383,10 +1521,10 @@ def main():
                             current_delay   = global_delay[0]
                         thread_safe_print(f"{CYAN}[*] Delay recovered to {current_delay:.1f}s{RESET}")
 
-                    # Checkpoint every 10 users (only thread 0 to avoid collisions)
-                    if thread_id == 0 and (idx + 1) % 10 == 0:
-                        with output_lock:
-                            save_checkpoint(idx + 1, total, args.target)
+                    # Mark this user done and checkpoint periodically
+                    mark_completed(idx)
+                    if (idx + 1) % 10 == 0:
+                        save_checkpoint_threadsafe(total, args.target, session_config)
 
                     time.sleep(current_delay)
 
@@ -1409,6 +1547,20 @@ def main():
         threads.append(t)
         if num_threads > 1 and tid < num_threads - 1:
             time.sleep(0.1)  # small stagger to avoid simultaneous connection storms
+
+    # Handle Ctrl+C — save checkpoint and exit cleanly
+    interrupted = threading.Event()
+
+    def sigint_handler(sig, frame):
+        if not interrupted.is_set():
+            interrupted.set()
+            print(f"\n\n{YELLOW}[!] Interrupted — saving checkpoint …{RESET}")
+            save_checkpoint_threadsafe(total, args.target, session_config)
+            print(f"[*] Checkpoint saved. Re-run with --resume to continue.")
+        sys.exit(0)
+
+    import signal
+    signal.signal(signal.SIGINT, sigint_handler)
 
     for t in threads:
         t.join()
