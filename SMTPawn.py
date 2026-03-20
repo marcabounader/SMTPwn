@@ -51,6 +51,9 @@ def get_args():
     parser.add_argument("-b", "--batch",    type=int, default=10,      help="Usernames per TCP connection (default: 10)")
     parser.add_argument("--delay",          type=float, default=0.3,   help="Delay between queries in seconds (default: 0.3)")
     parser.add_argument("--timeout",        type=float, default=15.0,  help="Socket timeout in seconds (default: 15.0)")
+    parser.add_argument("--no-preflight",   action="store_true",       help="Skip pre-flight check entirely")
+    parser.add_argument("--preflight-mode", choices=["selected", "all"], default="all",
+                        help="Pre-flight scope: 'selected' tests only your chosen method, 'all' tests all methods (default: all)")
     return parser.parse_args()
 
 
@@ -212,14 +215,15 @@ def validate_user(s, method, user, domain, verbose):
 
 # ── Pre-flight ─────────────────────────────────────────────────────────────────
 
-def preflight_check(target, port, domain, method, timeout, verbose):
+def preflight_check(target, port, domain, method, timeout, verbose, preflight_mode="all"):
     """
-    Test all three methods with a garbage user to determine reliability.
-    Shows results and asks user if they want to switch method.
+    Test methods with a garbage user to determine reliability.
+    preflight_mode: 'all' tests VRFY/RCPT/EXPN, 'selected' tests only chosen method.
     Returns the method to use (may be updated by user input).
     """
     garbage = random_garbage(domain)
-    print(f"\n[*] Pre-flight: testing all methods with garbage user …")
+    methods_to_test = ["VRFY", "RCPT", "EXPN"] if preflight_mode == "all" else [method]
+    print(f"\n[*] Pre-flight: testing {preflight_mode} method(s) with garbage user …")
     print(f"[*] Garbage user : {garbage}")
 
     s, _ = connect_and_init(target, port, domain, timeout, verbose)
@@ -228,7 +232,7 @@ def preflight_check(target, port, domain, method, timeout, verbose):
         return method
 
     results = {}
-    for m in ["VRFY", "RCPT", "EXPN"]:
+    for m in methods_to_test:
         if verbose:
             print(f"\n  [*] Testing {m} ...")
         try:
@@ -272,16 +276,16 @@ def preflight_check(target, port, domain, method, timeout, verbose):
                 return suggestion
             else:
                 # User wants to keep original method — ask if they want to proceed anyway
-                proceed = input(f"[?] Proceed with {method} anyway (results may be unreliable)? [y/n] (default: n): ").strip().lower()
-                if proceed not in ("y", "yes"):
+                proceed = input(f"[?] Proceed with {method} anyway (results may be unreliable)? [y/n] (default: y): ").strip().lower()
+                if proceed not in ("", "y", "yes"):
                     print("[!] Aborting — rerun with a different method.")
                     sys.exit(0)
                 print(f"[*] Proceeding with {method} — expect false positives.")
         else:
             # No reliable method found at all
             print("[!] No reliable method found — all methods appear unreliable on this server.")
-            proceed = input(f"[?] Proceed anyway with {method} (expect false positives)? [y/n] (default: n): ").strip().lower()
-            if proceed not in ("y", "yes"):
+            proceed = input(f"[?] Proceed anyway with {method} (expect false positives)? [y/n] (default: y): ").strip().lower()
+            if proceed not in ("", "y", "yes"):
                 print("[!] Aborting — try a different target port or approach.")
                 sys.exit(0)
             print(f"[*] Proceeding with {method} — results may not be reliable.")
@@ -336,11 +340,15 @@ def main():
     print(f"[*] Potential output: {args.output_potential}")
 
     # ── Pre-flight ─────────────────────────────────────────────────────────────
-    method = preflight_check(
-        args.target, args.port, args.domain,
-        args.method, args.timeout, args.verbose
-    )
-    args.method = method
+    if args.no_preflight:
+        print("\n[*] Pre-flight skipped (--no-preflight).")
+    else:
+        method = preflight_check(
+            args.target, args.port, args.domain,
+            args.method, args.timeout, args.verbose,
+            preflight_mode=args.preflight_mode
+        )
+        args.method = method
 
     print()
     print("[*] Waiting 3s before scan to avoid rate limiting …")
