@@ -52,6 +52,14 @@ TIMING_TEMPLATES = {
     5: {"name": "Insane",     "delay": 0.0,  "timeout": 5.0,  "batch": 50},
 }
 
+progress_lock = threading.Lock()
+progress_state = {
+    "done": 0,
+    "valid": 0,
+    "potential": 0,
+    "start_time": time.time()
+}
+
 DEFAULT_TIMING = 3
 retry_tracker = {}
 MAX_USER_RETRIES = 3
@@ -1444,8 +1452,40 @@ def main():
 
     def thread_safe_print(*a, **kw):
         with print_lock:
+            print("\r" + " " * 120, end="\r")  # clear line
             print(*a, **kw)
-
+          
+    def progress_monitor(total):
+      while True:
+          time.sleep(0.5)
+  
+          with progress_lock:
+              done = progress_state["done"]
+              valid = progress_state["valid"]
+              potential = progress_state["potential"]
+              start = progress_state["start_time"]
+  
+          percent = (done / total) * 100 if total else 0
+          elapsed = time.time() - start
+          rate = done / elapsed if elapsed > 0 else 0
+  
+          bar_len = 30
+          filled = int(bar_len * done / total) if total else 0
+          bar = "█" * filled + "-" * (bar_len - filled)
+  
+          msg = (
+              f"\r[{bar}] {done}/{total} "
+              f"({percent:.1f}%) | "
+              f"{GREEN}{valid} valid{RESET} | "
+              f"{YELLOW}{potential} pot{RESET} | "
+              f"{rate:.1f}/s"
+          )
+  
+          with print_lock:
+              print(msg, end="", flush=True)
+  
+          if done >= total:
+              break
     def worker(thread_id):
         """Worker thread — each gets its own SMTP connection per batch."""
         MAX_CONN_RETRIES = 3
@@ -1534,6 +1574,9 @@ def main():
                         with output_lock:
                             counts["valid"] += 1
                             save_result(entry, args.output, args.output_format)
+                            with progress_lock:
+                              progress_state["valid"] += 1
+                            
     
                     elif result == "potential":
                         tag = method_tag(method_results)
@@ -1553,6 +1596,9 @@ def main():
                         with output_lock:
                             counts["potential"] += 1
                             save_result(entry, args.output, args.output_format)
+                            with progress_lock:
+                              progress_state["potential"] += 1
+                            
     
                     elif result == "disabled":
                         if args.verbose or args.user:
@@ -1571,6 +1617,8 @@ def main():
     
                     # Mark completed
                     mark_completed(idx)
+                    with progress_lock:
+                        progress_state["done"] += 1
                     with retry_lock:
                         retry_tracker.pop(idx, None)
     
@@ -1599,15 +1647,33 @@ def main():
                 s.close()
             except Exception:
                 pass
-              
+            
     # ── Launch threads ─────────────────────────────────────────────────────────
+    
+    # Start progress monitor
+    progress_thread = threading.Thread(
+        target=progress_monitor,
+        args=(total,),
+        daemon=True
+    )
+    progress_thread.start()
+    
+    # Start ENTER listener (optional but cool)
+    listener_thread = threading.Thread(
+        target=input_listener,
+        args=(total,),
+        daemon=True
+    )
+    listener_thread.start()
+    
     threads = []
     for tid in range(num_threads):
-      t = threading.Thread(target=worker, args=(tid,), daemon=True)
-      t.start()
-      threads.append(t)
-      if num_threads > 1 and tid < num_threads - 1:
-        time.sleep(0.1)  # small stagger to avoid simultaneous connection storms
+        t = threading.Thread(target=worker, args=(tid,), daemon=True)
+        t.start()
+        threads.append(t)
+    
+        if num_threads > 1 and tid < num_threads - 1:
+            time.sleep(0.1)  # stagger 
         
     # Handle Ctrl+C — save checkpoint and exit cleanly
     interrupted = threading.Event()
@@ -1624,7 +1690,7 @@ def main():
     
     for t in threads:
         t.join()
-    
+    print()
     valid_count     = counts["valid"]
     potential_count = counts["potential"]
     
