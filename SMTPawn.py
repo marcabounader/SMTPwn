@@ -406,13 +406,15 @@ def random_garbage(domain=None):
 
 
 def safe_input(prompt, default=""):
-    """safe_input() wrapper that exits cleanly on Ctrl+C."""
     try:
-        return safe_input(prompt)
+        value = input(prompt)
+        return value.strip() if value else default
+    except EOFError:
+        # Handles non-interactive environments (pipes, scripts)
+        return default
     except KeyboardInterrupt:
-        print(f"\n\n[!] Interrupted — exiting.")
+        print(f"\n\n[!] Interrupted — exiting cleanly.")
         sys.exit(0)
-
 
 def sanitize_domain(raw):
     """Strip quotes, whitespace, and invalid characters from a domain input."""
