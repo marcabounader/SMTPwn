@@ -223,8 +223,10 @@ def preflight_check(target, port, domain, method, timeout, verbose):
 
     results = {}
     for m in ["VRFY", "RCPT", "EXPN"]:
+        if verbose:
+            print(f"\n  [*] Testing {m} ...")
         try:
-            res = validate_user(s, m, garbage, domain, verbose=False)
+            res = validate_user(s, m, garbage, domain, verbose=verbose)
             results[m] = res
         except Exception:
             results[m] = "error"
