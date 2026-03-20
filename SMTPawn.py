@@ -395,6 +395,38 @@ def random_garbage(domain=None):
     return f"{user}@{domain}" if domain else user
 
 
+def resolve_domain_interactive(banner, mta_profile, provided_domain=None):
+    """
+    Determine EHLO domain after fingerprinting.
+    Called after we already have the banner and MTA profile.
+    Returns domain string.
+    """
+    if provided_domain:
+        print(f"[*] Domain   : {provided_domain} (from -d flag)")
+        return provided_domain
+
+    extracted = extract_domain_from_banner(banner)
+
+    if extracted:
+        print(f"\n[*] Domain found in banner: {CYAN}{extracted}{RESET}")
+        rcpt_fmt = mta_profile.get("rcpt_format", "both")
+        hint = ""
+        if rcpt_fmt == "full":
+            hint = f" — {mta_profile['name']} typically needs user@domain in RCPT TO"
+        elif rcpt_fmt == "plain":
+            hint = f" — {mta_profile['name']} typically uses plain usernames in RCPT TO"
+        if hint:
+            print(f"  {GRAY}(MTA: {mta_profile['name']}{hint}){RESET}")
+        choice = input(f"[?] Use '{extracted}' for EHLO? [y/n] (default: y): ").strip().lower()
+        if choice in ("", "y", "yes"):
+            return extracted
+        manual = input("[?] Enter domain for EHLO (leave blank for 'pentest.local'): ").strip()
+        return manual if manual else "pentest.local"
+
+    manual = input("[?] No domain found in banner. Enter EHLO domain (leave blank for 'pentest.local'): ").strip()
+    return manual if manual else "pentest.local"
+
+
 def extract_domain_from_banner(banner):
     match = re.search(r"220\s+([\w.\-]+)", banner)
     return match.group(1) if match else None
