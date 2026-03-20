@@ -1042,6 +1042,7 @@ def main():
     args = get_args()
     resumed_session = False
     # ── Early resume restore (before probe) ───────────────────
+    cli = sys.argv[1:]
     if args.resume:
         if not os.path.exists(CHECKPOINT_FILE):
             print("[!] No checkpoint file found")
@@ -1061,11 +1062,25 @@ def main():
             args.port          = session.get("port", 25)
             args.output        = session.get("output", args.output)
             args.output_format = session.get("output_format", args.output_format)
-            args.timing        = session.get("timing", args.timing)
-            args.threads       = session.get("threads", args.threads)
-            args.batch         = session.get("batch", args.batch)
-            args.delay         = session.get("delay", args.delay)
-            args.timeout       = session.get("timeout", args.timeout)
+            # Timing template
+            if "--timing" not in cli and "-T" not in cli:
+                args.timing = session.get("timing", args.timing)
+            
+            # Threads (you already fixed this)
+            if "--threads" not in cli:
+                args.threads = session.get("threads", args.threads)
+            
+            # Batch size
+            if "--batch" not in cli and "-b" not in cli:
+                args.batch = session.get("batch", args.batch)
+            
+            # Delay
+            if "--delay" not in cli:
+                args.delay = session.get("delay", args.delay)
+            
+            # Timeout
+            if "--timeout" not in cli:
+                args.timeout = session.get("timeout", args.timeout)
             args.starttls      = session.get("starttls", args.starttls)
             args.no_starttls   = session.get("no_starttls", args.no_starttls)
             args.auth_user     = session.get("auth_user", args.auth_user)
@@ -1100,7 +1115,6 @@ def main():
     # ── Apply timing template ──────────────────────────────────────────────────
     tmpl = TIMING_TEMPLATES[args.timing]
     # Only override if user didn't explicitly pass these flags
-    cli = sys.argv[1:]
     if "--delay"   not in cli: args.delay   = tmpl["delay"]
     if "--timeout" not in cli: args.timeout = tmpl["timeout"]
     if "--batch"   not in cli and "-b" not in cli: args.batch = tmpl["batch"]
