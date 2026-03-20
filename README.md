@@ -1,7 +1,3 @@
-<!-- google-site-verification: LrzQnOtb2bP99qdZnB_Lo6esMTWRcgIHKpcmYQmc-x8 -->
-
-# SMTPwn
-
 ```
   ____  __  __ _____ ____
  / ___||  \/  |_   _|  _ \__      ___ __
