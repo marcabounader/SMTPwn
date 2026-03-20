@@ -1590,45 +1590,44 @@ def main():
                 s.close()
             except Exception:
                 pass
-    
-            # ── Launch threads ─────────────────────────────────────────────────────────
-            threads = []
-            for tid in range(num_threads):
-                t = threading.Thread(target=worker, args=(tid,), daemon=True)
-                t.start()
-                threads.append(t)
-                if num_threads > 1 and tid < num_threads - 1:
-                    time.sleep(0.1)  # small stagger to avoid simultaneous connection storms
+              
+    # ── Launch threads ─────────────────────────────────────────────────────────
+    threads = []
+    for tid in range(num_threads):
+      t = threading.Thread(target=worker, args=(tid,), daemon=True)
+      t.start()
+      threads.append(t)
+      if num_threads > 1 and tid < num_threads - 1:
+        time.sleep(0.1)  # small stagger to avoid simultaneous connection storms
         
-            # Handle Ctrl+C — save checkpoint and exit cleanly
-            interrupted = threading.Event()
+    # Handle Ctrl+C — save checkpoint and exit cleanly
+    interrupted = threading.Event()
     
-        def sigint_handler(sig, frame):
-            if not interrupted.is_set():
-                interrupted.set()
-                print(f"\n\n{YELLOW}[!] Interrupted — saving checkpoint …{RESET}")
-                save_checkpoint_threadsafe(total, args.target, session_config)
-                print(f"[*] Checkpoint saved. Re-run with --resume to continue.")
-            sys.exit(0)
+    def sigint_handler(sig, frame):
+      if not interrupted.is_set():
+          interrupted.set()
+          print(f"\n\n[!] Interrupted — saving checkpoint …")
+          save_checkpoint_threadsafe(total, args.target, session_config)
+      sys.exit(0)
     
-        import signal
-        signal.signal(signal.SIGINT, sigint_handler)
+    import signal
+    signal.signal(signal.SIGINT, sigint_handler)
     
-        for t in threads:
-            t.join()
+    for t in threads:
+        t.join()
     
-        valid_count     = counts["valid"]
-        potential_count = counts["potential"]
+    valid_count     = counts["valid"]
+    potential_count = counts["potential"]
     
-        # ── Summary ────────────────────────────────────────────────────────────────
-        clear_checkpoint()
-        print(f"\n{BOLD}[*] Scan complete.{RESET}")
-        print(f"[*] Valid     : {GREEN}{valid_count}{RESET}")
-        print(f"[*] Potential : {YELLOW}{potential_count}{RESET} (252 responses — verify manually)")
-        if valid_count > 0 or potential_count > 0:
-            print(f"[*] Results saved to: {args.output}")
-        else:
-            print(f"[*] No users found — nothing saved.")
+    # ── Summary ────────────────────────────────────────────────────────────────
+    clear_checkpoint()
+    print(f"\n{BOLD}[*] Scan complete.{RESET}")
+    print(f"[*] Valid     : {GREEN}{valid_count}{RESET}")
+    print(f"[*] Potential : {YELLOW}{potential_count}{RESET} (252 responses — verify manually)")
+    if valid_count > 0 or potential_count > 0:
+      print(f"[*] Results saved to: {args.output}")
+    else:
+      print(f"[*] No users found — nothing saved.")
 
 
 if __name__ == "__main__":
