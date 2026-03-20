@@ -998,6 +998,10 @@ def save_checkpoint_threadsafe(total, target, session_config=None):
         "total": total,
         "target": target,
         "completed": snapshot,
+        "counts": {
+            "valid": counts["valid"],
+            "potential": counts["potential"]
+        }
     }
 
     if session_config:
@@ -1096,6 +1100,7 @@ def main():
     resumed_session = False
     # ── Early resume restore (before probe) ───────────────────
     cli = sys.argv[1:]
+    counts = {"valid": 0, "potential": 0}
     if args.resume:
         if not os.path.exists(CHECKPOINT_FILE):
             print("[!] No checkpoint file found")
@@ -1109,8 +1114,11 @@ def main():
             if not session:
                 print("[!] Resume failed: no session data in checkpoint")
                 sys.exit(1)
-    
-            # 🔥 FULL restore — override EVERYTHING
+            counts_data = data.get("counts", {})
+            if not counts_data:
+                print("[!] Resume failed: no counts data in checkpoint")
+                sys.exit(1)
+
             args.target        = session.get("target")
             args.port          = session.get("port", 25)
             args.output        = session.get("output", args.output)
@@ -1147,15 +1155,22 @@ def main():
             mail_from     = session.get("mail_from", f"noreply@{domain}")
             fp_banner = session.get("fp_banner", "")
             ehlo_caps = session.get("ehlo_caps", "")
+            counts["valid"] = counts_data.get("valid",0)
+            counts["potential"] = counts_data.get("potential",0)
             print(f"{YELLOW}[*] Resuming session — restoring full configuration{RESET}")
     
             resumed_session = True
             restored = load_checkpoint(args.target)
+          
+            with _completed_lock:
+                _completed_set.update(restored)
+              
             with progress_lock:
               progress_state["done"] = len(_completed_set)
               progress_state["start_time"] = time.time()
-            with _completed_lock:
-                _completed_set.update(restored)
+              progress_state["valid"] = counts["valid"]
+              progress_state["potential"] = counts["potential"]
+
             
             print(f"{GREEN}[+] Restored {len(_completed_set)} completed users from checkpoint{RESET}")
         except Exception as e:
@@ -1486,7 +1501,6 @@ def main():
     # Thread-safe shared state
 
     user_queue     = queue.Queue()
-    counts         = {"valid": 0, "potential": 0}
     global_delay   = [args.delay]       # mutable so threads can share rate limit state
 
     # Fill the queue — skip already completed users from checkpoint
@@ -1636,7 +1650,7 @@ def main():
                     # Mark completed
                     mark_completed(idx)
                     with progress_lock:
-                        progress_state["done"] += 1
+                        progress_state["done"] = len(_completed_set)
                     with retry_lock:
                         retry_tracker.pop(idx, None)
     
