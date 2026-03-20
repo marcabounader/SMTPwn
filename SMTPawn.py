@@ -1080,11 +1080,6 @@ def main():
             fp_banner = session.get("fp_banner", "")
             ehlo_caps = session.get("ehlo_caps", "")
             print(f"{YELLOW}[*] Resuming session — restoring full configuration{RESET}")
-            print(f"[*] Target   : {args.target}:{args.port}")
-            print(f"[*] Methods  : {','.join(methods)}")
-            print(f"[*] Domain   : {domain}")
-            print(f"[*] Threads  : {args.threads}")
-            print(f"[*] Output   : {args.output}")
     
             resumed_session = True
             restored = load_checkpoint(args.target)
