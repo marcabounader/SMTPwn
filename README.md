@@ -1,4 +1,4 @@
-# [SMTPwn](https://github.com/yourhandle/SMTPwn) — SMTP User Enumeration Tool for Penetration Testing
+# [SMTPwn](https://github.com/marcabounader/SMTPwn) — SMTP User Enumeration Tool for Penetration Testing
 
 ```
   ____  __  __ _____ ____
