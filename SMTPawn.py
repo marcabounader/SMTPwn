@@ -201,7 +201,6 @@ def get_args():
 
     # Output
     parser.add_argument("-o",  "--output",    default="valid_users.txt",     help="Output file for confirmed valid users")
-    parser.add_argument("--output-potential", default="potential_users.txt", help="Output file for potential users (252 responses)")
     parser.add_argument("--output-format",    choices=["txt", "json", "csv"], default="txt", help="Output format: txt, json, csv (default: txt)")
     parser.add_argument("--resume",           action="store_true",           help="Resume from checkpoint if previous scan was interrupted")
 
@@ -1126,7 +1125,7 @@ def main():
     print(f"\n[*] Target   : {args.target}:{args.port}")
     print(f"[*] EHLO     : {domain}")
     print(f"[*] Users    : {total}{f' (resuming from {start_index + 1})' if start_index else ''}")
-    print(f"[*] Output   : {args.output} (valid) | {args.output_potential} (potential)")
+    print(f"[*] Output   : {args.output}")
     print(f"[*] Format   : {args.output_format}")
     if args.starttls:
         print(f"[*] STARTTLS : forced")
@@ -1309,7 +1308,7 @@ def main():
                         "method_results": method_results,
                         "expn_expanded":  []
                     }
-                    save_result(entry, args.output_potential, args.output_format)
+                    save_result(entry, args.output, args.output_format)
 
                 # ── Disabled ──────────────────────────────────────────────────
                 elif result == "disabled":
@@ -1349,11 +1348,9 @@ def main():
     print(f"\n{BOLD}[*] Scan complete.{RESET}")
     print(f"[*] Valid     : {GREEN}{valid_count}{RESET}")
     print(f"[*] Potential : {YELLOW}{potential_count}{RESET} (252 responses — verify manually)")
-    if valid_count > 0:
-        print(f"[*] Valid users saved to    : {args.output}")
-    if potential_count > 0:
-        print(f"[*] Potential users saved to: {args.output_potential}")
-    if valid_count == 0 and potential_count == 0:
+    if valid_count > 0 or potential_count > 0:
+        print(f"[*] Results saved to: {args.output}")
+    else:
         print(f"[*] No users found — nothing saved.")
 
 
