@@ -187,7 +187,9 @@ def get_args():
     # Target
     parser.add_argument("-t",  "--target",    required=False,       help="Target IP or hostname")
     parser.add_argument("-p",  "--port",      type=int, default=25, help="Target port (default: 25)")
-    parser.add_argument("-d",  "--domain",    default=None,        help="Domain for EHLO/MAIL FROM. If omitted, extracted from banner.")
+    parser.add_argument("-d",  "--domain-target", dest="domain_target", default=None,
+                        help="Target domain for RCPT TO and MAIL FROM (e.g. isf.gov.lb). If omitted, asked interactively.")
+    parser.add_argument("--ehlo",             default=None,        help="Domain to use in EHLO handshake. If omitted, extracted from banner.")
 
     # Users
     parser.add_argument("-w",  "--wordlist",  help="Path to username wordlist")
@@ -250,7 +252,7 @@ def parse_methods(method_str):
     methods = [m.strip().upper() for m in method_str.split(",")]
     invalid = [m for m in methods if m not in VALID_METHODS]
     if invalid:
-        print(f"[!] Invalid method(s): {', '.join(invalid)}. Choose from: VRFY, RCPT, EXPN.")
+        print(err(f"Invalid method(s): {', '.join(invalid)}. Choose from: VRFY, RCPT, EXPN."))
         sys.exit(1)
     return list(dict.fromkeys(methods))
 
@@ -284,13 +286,12 @@ def generate_username_variations(full_name):
 
 # ── Network helpers ────────────────────────────────────────────────────────────
 
-def send_cmd(s, cmd, verbose, printer=None):
+def send_cmd(s, cmd, verbose=False):
     if verbose:
         with print_lock:
           print(f"  {CYAN}[>]{RESET} {cmd.strip()}")
 
     s.send(cmd.encode())
-    s.settimeout(5)
 
     res = b""
 
@@ -367,7 +368,7 @@ def connect_and_init(target, port, domain, timeout, verbose, use_starttls=False,
         if not res.startswith("250"):
             res = send_cmd(s, f"HELO {domain}\r\n", False)
             if not res.startswith("250"):
-                print(f"[!] Handshake failed: {res.strip()}")
+                print(err(f"Handshake failed: {res.strip()}"))
                 s.close()
                 return None, banner
         if verbose:
@@ -388,9 +389,9 @@ def connect_and_init(target, port, domain, timeout, verbose, use_starttls=False,
                     if verbose:
                         print(f"  {GREEN}[handshake] STARTTLS → TLS established{RESET}")
                 elif use_starttls:
-                    print(f"[!] STARTTLS requested but server rejected: {tls_res.strip()}")
+                    print(warn(f"STARTTLS requested but server rejected: {tls_res.strip()}"))
             elif use_starttls:
-                print(f"[!] --starttls requested but server does not advertise STARTTLS")
+                print(warn("--starttls requested but server does not advertise STARTTLS"))
 
         # AUTH LOGIN
         if auth_user and auth_pass:
@@ -399,16 +400,16 @@ def connect_and_init(target, port, domain, timeout, verbose, use_starttls=False,
             send_cmd(s, base64.b64encode(auth_user.encode()).decode() + "\r\n", verbose)
             auth_res = send_cmd(s, base64.b64encode(auth_pass.encode()).decode() + "\r\n", verbose)
             if not auth_res.startswith("235"):
-                print(f"[!] AUTH failed: {auth_res.strip()}")
+                print(err(f"AUTH failed: {auth_res.strip()}"))
                 s.close()
                 return None, banner
             if verbose:
-                print(f"  {GREEN}[*] AUTH successful{RESET}")
+                print("  " + ok("AUTH successful"))
 
         return s, banner
 
     except Exception as e:
-        print(f"[!] Connection error: {e}")
+        print(warn(f"Connection error: {e}"))
         return None, None
 
 
@@ -467,39 +468,33 @@ def test_ehlo(target, port, ehlo_domain, timeout, verbose):
         return False, str(e)
 
 
-def resolve_domain_interactive(banner, mta_profile, provided_domain=None, target=None, port=25, timeout=15.0, verbose=False, ehlo_caps="", force=False):
+def resolve_ehlo_domain(banner, mta_profile, provided_ehlo=None, target=None, port=25, timeout=15.0, verbose=False, ehlo_caps="", force=False):
     """
-    Determine EHLO domain and RCPT domain after fingerprinting.
-    Sanitises input, tests EHLO before proceeding, and asks about RCPT domain separately.
-    Returns (ehlo_domain, rcpt_domain).
+    Phase 1: Determine EHLO domain (handshake identity only).
+    Uses --ehlo if provided, otherwise extracted from banner or asked.
+    Tests the domain with a real EHLO and retries if it fails.
+    Returns ehlo_domain string.
     """
-    if provided_domain:
-        print(f"[*] Domain   : {provided_domain} (from -d flag)")
-        # Test EHLO — skip if probe already verified a domain match
+    if provided_ehlo:
+        print(f"[*] EHLO domain  : {provided_ehlo} (from --ehlo)")
         if ehlo_caps and "250" in ehlo_caps:
             if verbose:
-                print(f"  {GREEN}[+] EHLO capability confirmed during probe{RESET}")
+                print("  " + ok("EHLO accepted — verified during probe"))
         elif target:
-            if verbose:
-                print(f"[*] Testing EHLO with '{provided_domain}' …")
-            ok, result = test_ehlo(target, port, provided_domain, timeout, verbose)
-            if ok:
-                if verbose:
-                    print(f"  {GREEN}[+] EHLO accepted — server responded 250{RESET}")
-            else:
+            ok, result = test_ehlo(target, port, provided_ehlo, timeout, verbose)
+            if not ok:
                 print(f"  {YELLOW}[!] EHLO warning: {result}{RESET}")
                 if not force:
-                    proceed = safe_input(f"[?] EHLO test failed. Proceed anyway? [y/n] (default: y): ").strip().lower()
+                    proceed = safe_input("[?] EHLO test failed. Proceed anyway? [y/n] (default: y): ").strip().lower()
                     if proceed not in ("", "y", "yes"):
-                        print("[!] Aborting — re-run with a different -d domain.")
+                        print("[!] Aborting — re-run with a different --ehlo domain.")
                         sys.exit(0)
                 else:
                     print(f"[*] EHLO failed but --force set — continuing.")
-        return provided_domain, None
+        return provided_ehlo
 
     extracted = extract_domain_from_banner(banner)
 
-    # Ask for EHLO domain, test it, retry if failed
     while True:
         if extracted:
             print(f"\n[*] Domain found in banner: {CYAN}{extracted}{RESET}")
@@ -521,11 +516,10 @@ def resolve_domain_interactive(banner, mta_profile, provided_domain=None, target
             raw = safe_input("[?] No domain found in banner. Enter EHLO domain (leave blank for 'pentest.local'): ")
             ehlo_domain = sanitize_domain(raw) or "pentest.local"
 
-        # Test the EHLO — skip if we already have caps from the probe connection
+        # Test EHLO — reuse probe result if same domain
         if ehlo_caps and ehlo_domain == extract_domain_from_banner(banner):
-            # Probe already tested this exact domain — reuse result
             if verbose:
-                print(f"  {GREEN}[+] EHLO accepted — verified during probe{RESET}")
+                print("  " + ok("EHLO accepted — verified during probe"))
             break
         elif target:
             print(f"[*] Testing EHLO with '{ehlo_domain}' …")
@@ -536,48 +530,88 @@ def resolve_domain_interactive(banner, mta_profile, provided_domain=None, target
                 break
             else:
                 print(f"  {RED}[!] EHLO failed: {result}{RESET}")
-                retry = safe_input(f"[?] Try a different EHLO domain? [y/n] (default: y): ").strip().lower()
+                if force:
+                    print(f"[*] Proceeding with '{ehlo_domain}' despite EHLO failure.")
+                    break
+                retry = safe_input("[?] Try a different EHLO domain? [y/n] (default: y): ").strip().lower()
                 if retry not in ("", "y", "yes"):
                     print(f"[*] Proceeding with '{ehlo_domain}' despite EHLO failure.")
                     break
-                extracted = None  # clear so next loop asks manually
+                extracted = None
         else:
             break
 
-    print(f"\n[*] EHLO domain set to: {CYAN}{ehlo_domain}{RESET}")
-    print(f"  {GRAY}Note: EHLO is just a handshake — RCPT TO domain can be different{RESET}")
+    print(f"\n[*] EHLO domain  : {CYAN}{ehlo_domain}{RESET} (handshake only)")
+    return ehlo_domain
 
-    # Only ask RCPT domain if RCPT is in the initial methods
-    # If not, return None — will be asked later if preflight adds RCPT
-    from sys import argv as _argv
-    cli_methods = ""
-    for i, arg in enumerate(_argv):
-        if arg in ("-m", "--method") and i + 1 < len(_argv):
-            cli_methods = _argv[i + 1].upper()
-    rcpt_in_initial = "RCPT" in cli_methods
 
-    if not rcpt_in_initial:
-        print(f"  {GRAY}(RCPT TO domain will be asked if RCPT method is selected){RESET}")
-        return ehlo_domain, "ASK_LATER"
+def derive_target_domain(fqdn):
+    """
+    Suggest a target domain by stripping the first label from an FQDN.
+    e.g. mail.isf.gov.lb  → isf.gov.lb
+         smtp.example.com  → example.com
+         mx1.mail.corp.com → mail.corp.com
+         example.com       → example.com  (already bare, return as-is)
+         InFreight         → None  (single word, not a domain — can't derive)
+    Only called when -d is NOT provided — user always confirms or overrides.
+    """
+    if not fqdn:
+        return None
+    parts = fqdn.rstrip(".").split(".")
+    if len(parts) == 1:
+        return None   # single word like 'InFreight' or 'mail1' — not a real domain
+    if len(parts) == 2:
+        return fqdn   # already a bare domain like example.com
+    return ".".join(parts[1:])  # strip first label
 
-    rcpt_choice = safe_input(f"[?] What domain to use in RCPT TO?\n"
-                        f"    [1] Same as EHLO ({ehlo_domain})\n"
-                        f"    [2] Different domain (you specify)\n"
-                        f"    [3] No domain — plain username only\n"
-                        f"    Choice (default: 1): ").strip()
 
-    if rcpt_choice == "2":
-        raw = safe_input("[?] Enter RCPT TO domain: ")
-        rcpt_domain = sanitize_domain(raw) or ehlo_domain
-        print(f"[*] RCPT format: user@{rcpt_domain}")
-    elif rcpt_choice == "3":
-        rcpt_domain = None
-        print(f"[*] RCPT format: plain username (no @domain)")
+def ask_target_domain(banner_fqdn, ehlo_domain, mta_profile):
+    """
+    Phase 2: Determine target domain for RCPT TO and MAIL FROM.
+    Only called when -d was NOT provided.
+    Always shows what the banner gave — user decides what to use from it.
+    Returns target_domain string or None (plain username).
+    """
+    print(f"\n[*] Set TARGET domain — used in RCPT TO and MAIL FROM")
+    print(f"  {GRAY}(The domain you are testing, not the EHLO handshake){RESET}")
+
+    if banner_fqdn:
+        print(f"[*] Banner gave  : {CYAN}{banner_fqdn}{RESET}")
+        choice = safe_input(
+            f"[?] Domain to use?\n"
+            f"    [1] Use banner value: {banner_fqdn}\n"
+            f"    [2] Enter manually (take part of it or type your own)\n"
+            f"    [3] No domain — plain username only\n"
+            f"    Choice (default: 1): "
+        ).strip()
+        if choice == "3":
+            print(f"[*] RCPT format  : plain username (no @domain)")
+            return None
+        elif choice == "2":
+            raw = safe_input(f"[?] Enter domain (banner was '{banner_fqdn}'): ").strip().strip('"\' ').strip()
+            target_domain = raw if raw else banner_fqdn
+        else:
+            target_domain = banner_fqdn
     else:
-        rcpt_domain = ehlo_domain
-        print(f"[*] RCPT format: user@{ehlo_domain}")
+        print(f"[*] No hostname found in banner")
+        choice = safe_input(
+            f"[?] Domain to use?\n"
+            f"    [1] Same as EHLO ({ehlo_domain})\n"
+            f"    [2] Enter manually\n"
+            f"    [3] No domain — plain username only\n"
+            f"    Choice (default: 1): "
+        ).strip()
+        if choice == "3":
+            print(f"[*] RCPT format  : plain username (no @domain)")
+            return None
+        elif choice == "2":
+            raw = safe_input(f"[?] Enter domain: ").strip().strip('"\' ').strip()
+            target_domain = raw if raw else ehlo_domain
+        else:
+            target_domain = ehlo_domain
 
-    return ehlo_domain, rcpt_domain
+    print(f"[*] Target domain: {CYAN}{target_domain}{RESET}")
+    return target_domain
 
 
 def extract_domain_from_banner(banner):
@@ -793,25 +827,8 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
                     print(f"  {GRAY}[*] VRFY garbage: {garbage_plain}{RESET}")
                 res = check_vrfy(s, garbage_plain, verbose, mta_profile)
             elif m == "RCPT":
-                # If rcpt_domain not set yet, and not suppressed, ask now
-                if rcpt_domain is None and "RCPT" not in methods and not no_method_switch and not force:
-                    print(f"\n  {CYAN}[*] RCPT is being tested — need to know domain format{RESET}")
-                    rcpt_fmt = mta_profile.get("rcpt_format", "both") if mta_profile else "both"
-                    default_c = "1" if rcpt_fmt != "plain" else "3"
-                    rc = safe_input(f"  [?] RCPT TO domain for test?\n"
-                               f"      [1] Use EHLO domain ({domain})\n"
-                               f"      [2] Different domain\n"
-                               f"      [3] No domain — plain username\n"
-                               f"      Choice (default: {default_c}): ").strip()
-                    if rc == "2":
-                        raw = safe_input("  [?] Enter domain: ").strip().strip('"\'').strip()
-                        rcpt_domain = raw if raw else domain
-                    elif rc == "3" or (rc == "" and default_c == "3"):
-                        rcpt_domain = None
-                    else:
-                        rcpt_domain = domain
-                    garbage_rcpt = f"{garbage_plain}@{rcpt_domain}" if rcpt_domain else garbage_plain
-                    _rcpt_domain_set_by_preflight = True
+                # rcpt_domain always confirmed by user before preflight runs
+                # None means plain username (deliberate choice), string means domain
                 if verbose:
                     print(f"  {GRAY}[*] RCPT garbage: {garbage_rcpt if rcpt_domain else garbage_plain}{RESET}")
                 res = check_rcpt(s, garbage_plain, rcpt_domain, mail_from, verbose, mta_profile)
@@ -862,11 +879,11 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
     # ── Case 2: selected is unreliable, nothing else reliable ─────────────────
     if not reliable:
         print(f"\n{YELLOW}[!] WARNING: selected method(s) ({','.join(methods)}) unreliable.{RESET}")
-        print(f"[!] No reliable method found on this server.")
+        print(warn("No reliable method found on this server."))
         if not force:
             proceed = safe_input(f"[?] Proceed anyway with {','.join(methods)} (expect false positives)? [y/n] (default: y): ").strip().lower()
             if proceed not in ("", "y", "yes"):
-                print("[!] Aborting.")
+                print(err("Aborting."))
                 sys.exit(0)
         else:
             print(f"[*] --force set — proceeding with {','.join(methods)} despite unreliable results.")
@@ -923,7 +940,7 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
         if not force:
             proceed = safe_input(f"[?] Proceed with {','.join(methods)} (expect false positives)? [y/n] (default: y): ").strip().lower()
             if proceed not in ("", "y", "yes"):
-                print("[!] Aborting.")
+                print(err("Aborting."))
                 sys.exit(0)
         else:
             print(f"[*] --force set — proceeding with {','.join(methods)}.")
@@ -934,7 +951,7 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
         if 0 <= idx < len(options):
             chosen, label = options[idx]
             print(f"[*] Using: {label}")
-            return chosen, rcpt_domain
+            return chosen, (rcpt_domain if _rcpt_domain_set_by_preflight else "ASK_LATER")
         else:
             print(f"[!] Invalid choice — keeping {','.join(methods)}")
     except ValueError:
@@ -995,21 +1012,23 @@ def save_checkpoint_threadsafe(total, target, session_config=None):
     with _completed_lock:
         snapshot = sorted(_completed_set)
 
+    with progress_lock:
+        v = progress_state["valid"]
+        p = progress_state["potential"]
+
     data = {
-        "total": total,
-        "target": target,
+        "total":     total,
+        "target":    target,
         "completed": snapshot,
-        "counts": {
-            "valid": progress_state["valid"],
-            "potential": progress_state["potential"]
-        }
+        "counts": {"valid": v, "potential": p}
     }
 
     if session_config:
         data["session"] = session_config
 
-    with open(CHECKPOINT_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+    with _file_lock:
+        with open(CHECKPOINT_FILE, "w") as f:
+            json.dump(data, f, indent=2)
 
 def save_result(entry, output_file, fmt):
     """Save a result entry to file atomically — safe for concurrent threads."""
@@ -1103,189 +1122,207 @@ def is_fatal_connection_error(err):
     ])
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-def main():
-    print(BANNER)
-    args = get_args()
-    resumed_session = False
-    # ── Early resume restore (before probe) ───────────────────
-    cli = sys.argv[1:]
-    if args.resume:
-        if not os.path.exists(CHECKPOINT_FILE):
-            print("[!] No checkpoint file found")
-            sys.exit(1)
-    
-        try:
-            with open(CHECKPOINT_FILE) as f:
-                data = json.load(f)
-    
-            session = data.get("session", {})
-            if not session:
-                print("[!] Resume failed: no session data in checkpoint")
-                sys.exit(1)
-            counts_data = data.get("counts", {})
-            if not counts_data:
-                print("[!] Resume failed: no counts data in checkpoint")
-                sys.exit(1)
 
-            args.target        = session.get("target")
-            args.port          = session.get("port", 25)
-            args.output        = session.get("output", args.output)
-            args.output_format = session.get("output_format", args.output_format)
-            progress_state["start_time"] = session.get("start_time", time.time())
-            # Timing template
-            if "--timing" not in cli and "-T" not in cli:
-                args.timing = session.get("timing", args.timing)
-            
-            # Threads (you already fixed this)
-            if "--threads" not in cli:
-                args.threads = session.get("threads", args.threads)
-            
-            # Batch size
-            if "--batch" not in cli and "-b" not in cli:
-                args.batch = session.get("batch", args.batch)
-            
-            # Delay
-            if "--delay" not in cli:
-                args.delay = session.get("delay", args.delay)
-            
-            # Timeout
-            if "--timeout" not in cli:
-                args.timeout = session.get("timeout", args.timeout)
-            args.starttls      = session.get("starttls", args.starttls)
-            args.no_starttls   = session.get("no_starttls", args.no_starttls)
-            args.auth_user     = session.get("auth_user", args.auth_user)
-            args.wordlist      = session.get("wordlist", args.wordlist)
-            mta_profile = session.get("mta_profile", MTA_DEFAULT_PROFILE)
-            # Restore scan state variables
-            domain        = session.get("domain", "pentest.local")
-            methods       = session.get("methods", ["RCPT"])
-            rcpt_domain   = session.get("rcpt_domain", None)
-            mail_from     = session.get("mail_from", f"noreply@{domain}")
-            fp_banner = session.get("fp_banner", "")
-            ehlo_caps = session.get("ehlo_caps", "")
-            print(f"{YELLOW}[*] Resuming session — restoring full configuration{RESET}")
-    
-            resumed_session = True
-            restored = load_checkpoint(args.target)
-          
-            with _completed_lock:
-                _completed_set.update(restored)
-              
-            with progress_lock:
-              progress_state["done"] = len(_completed_set)
-              progress_state["start_time"] = time.time()
-              progress_state["valid"] = counts_data.get("valid",0)
-              progress_state["potential"] = counts_data.get("potential",0)
+# ── Session setup: RESUME path ─────────────────────────────────────────────────
 
-            
-            print(f"{GREEN}[+] Restored {len(_completed_set)} completed users from checkpoint{RESET}")
-        except Exception as e:
-            print(f"[!] Failed to load checkpoint: {e}")
-            sys.exit(1)
-    
-    # ── Final validation ─────────────────────────────
-    if not args.target:
-        print("[!] Error: -t/--target is required unless using --resume")
+def session_setup_resume(args, cli):
+    """
+    Restore a previously interrupted session from checkpoint.
+    Returns a session dict with all scan settings, or calls sys.exit on failure.
+    FIXED settings always come from checkpoint.
+    ADJUSTABLE settings come from checkpoint unless CLI flags override them.
+    """
+    if not os.path.exists(CHECKPOINT_FILE):
+        print(err("No checkpoint file found — cannot resume."))
         sys.exit(1)
-      
-    # ── Apply timing template ──────────────────────────────────────────────────
-    tmpl = TIMING_TEMPLATES[args.timing]
-    # Only override if user didn't explicitly pass these flags
-    if "--delay"   not in cli: args.delay   = tmpl["delay"]
-    if "--timeout" not in cli: args.timeout = tmpl["timeout"]
-    if "--batch"   not in cli and "-b" not in cli: args.batch = tmpl["batch"]
-    effective = args.batch * args.threads if args.threads > 1 else args.batch
-    concurrency_note = f"  (effective {effective} users/cycle across {args.threads} threads)" if args.threads > 1 else ""
-    print(f"[*] Timing   : T{args.timing} {tmpl['name']} — delay={args.delay}s  timeout={args.timeout}s  batch={args.batch}{concurrency_note}")
-    # Warn if threads × batch is very high — likely to trigger rate limits
-    if args.threads * args.batch >= 50:
-        print(f"  {YELLOW}[!] High concurrency ({args.threads} threads × batch {args.batch}) — may trigger rate limits on strict servers{RESET}")
 
-    # ── Parse methods ──────────────────────────────────────────────────────────
-    if not resumed_session:
-      methods = parse_methods(args.method)
+    try:
+        with open(CHECKPOINT_FILE) as f:
+            data = json.load(f)
 
-    # ── Fingerprint MTA first — before asking domain ───────────────────────────
-    if not resumed_session:
-      # ── Single probe connection: banner + EHLO capabilities ──────────────────
-      # One connection to get everything: banner for MTA fingerprint,
-      # EHLO response for STARTTLS and capabilities. No redundant connections.
-      mta_profile = MTA_DEFAULT_PROFILE
-      print(f"\n[*] Probing target …")
-      fp_banner  = ""
-      ehlo_caps  = ""
-      probe_domain = args.domain or "probe.local"  # temp domain just for probe
-      try:
-          s_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-          s_probe.settimeout(args.timeout)
-          s_probe.connect((args.target, args.port))
-          try:
-            fp_banner = s_probe.recv(4096).decode(errors="replace")
-          except socket.timeout:
-            fp_banner = ""
-          ehlo_res  = send_cmd(s_probe, f"EHLO {probe_domain}\r\n", False)
-          if not ehlo_res.startswith("250"):
-              ehlo_res = send_cmd(s_probe, f"HELO {probe_domain}\r\n", False)
-          ehlo_caps = ehlo_res
-          s_probe.send(b"QUIT\r\n")
-          s_probe.close()
-      except Exception as e:
-          print(f"[!] Probe failed: {e}")
-          if is_fatal_connection_error(e):
-              print(f"{RED}[!] Target unreachable — aborting.{RESET}")
-              sys.exit(1)
-          return None, None
-      # ── Fingerprint from banner ────────────────────────────────────────────────
-      mta_profile = fingerprint_mta(fp_banner)
-      if args.server_type:
-          override = args.server_type.lower()
-          for key, profile in MTA_PROFILES.items():
-              if override in key or override in profile["name"].lower():
-                  mta_profile = profile
-                  print(f"  {CYAN}[*] MTA overridden by --server-type: {mta_profile['name']}{RESET}")
-                  break
-          else:
-              print(f"  {YELLOW}[!] --server-type '{args.server_type}' not recognised — using fingerprint result{RESET}")
-      mta_name = mta_profile["name"]
-      if has_banner(fp_banner):
-          print(f"[*] MTA detected : {CYAN}{mta_name}{RESET}")
-          print(f"[*] Banner       : {fp_banner.strip()[:80]}")
-      else:
-          print(f"[*] MTA detected : {CYAN}{mta_name}{RESET}")
-          print(f"  {YELLOW}[!] No informative banner — server may be hardened.{RESET}")
-      print(f"  {YELLOW}[!] {mta_name}: {mta_profile['notes']}{RESET}")
-      cli = sys.argv[1:]
-      if "-m" not in cli and "--method" not in cli:
-          suggested = mta_profile["reliable"]
-          if [suggested] != methods:
-              print(f"  {CYAN}[*] Auto-selecting method {suggested} based on {mta_name} profile.{RESET}")
-              methods = [suggested]
-      for m in methods:
-          if m == "VRFY" and mta_profile["vrfy"] is False:
-              print(f"  {RED}[!] VRFY is known to be disabled on {mta_name} — consider switching to RCPT.{RESET}")
-          if m == "EXPN" and mta_profile["expn"] is False:
-              print(f"  {RED}[!] EXPN is known to be disabled on {mta_name} — consider switching to RCPT.{RESET}")
-    else:
-      print(f"[*] Resume mode — skipping probe, using saved session data")    # --server-type overrides fingerprint
-    
-    # ── Resolve domain — informed by fingerprint ───────────────────────────────
-    # Pass ehlo_caps so resolve_domain_interactive can skip extra EHLO test
-    if not resumed_session:
-        domain_result = resolve_domain_interactive(
-            fp_banner, mta_profile, args.domain,
-            args.target, args.port, args.timeout,
-            args.verbose, ehlo_caps=ehlo_caps,
-            force=args.force
+        session = data.get("session", {})
+        if not session:
+            print(err("Resume failed: checkpoint has no session data."))
+            sys.exit(1)
+
+        counts_data = data.get("counts", {"valid": 0, "potential": 0})
+
+        _done  = len(data.get("completed", []))
+        _total = data.get("total", 0)
+        print(f"\n[*] Checkpoint found — resuming session")
+        print(f"[*] Target   : {session.get('target')}:{session.get('port', 25)}")
+        print(f"[*] Progress : {CYAN}{_done}/{_total}{RESET} users completed")
+        print(f"[*] Method(s): {','.join(session.get('methods', []))}")
+        print(f"[*] EHLO     : {session.get('domain', '-')}")
+        print(f"[*] Domain   : {session.get('target_domain', '-')}")
+        print(f"[*] Wordlist : {session.get('wordlist', '-')}")
+        print(f"[*] Output   : {session.get('output', '-')}")
+        print(f"[*] Timing   : T{session.get('timing', 3)} (saved)")
+        print(f"[*] Threads  : {session.get('threads', 1)} (saved)")
+
+        overrides = []
+        if "--timing" in cli or "-T" in cli: overrides.append("timing")
+        if "--threads" in cli: overrides.append("threads")
+        if "--batch" in cli or "-b" in cli: overrides.append("batch")
+        if "--delay" in cli: overrides.append("delay")
+        if "--timeout" in cli: overrides.append("timeout")
+        if "--starttls" in cli or "--no-starttls" in cli: overrides.append("starttls")
+        if overrides:
+            print(f"{CYAN}[*] CLI overrides: {', '.join(overrides)}{RESET}")
+
+        ans = safe_input(f"\n{ask('Resume with these settings? [y/n] (default: y): ')}").strip().lower()
+        if ans not in ("", "y", "yes"):
+            print("[*] Aborting resume — run without --resume to start fresh.")
+            sys.exit(0)
+
+        # ── FIXED settings — always from checkpoint ──────────────────────────
+        args.target        = session.get("target")
+        args.port          = session.get("port", 25)
+        args.output        = session.get("output", args.output)
+        args.output_format = session.get("output_format", args.output_format)
+        args.auth_user     = session.get("auth_user", args.auth_user)
+        args.auth_pass     = session.get("auth_pass", args.auth_pass)
+        args.wordlist      = session.get("wordlist", args.wordlist)
+        args.mail_from     = session.get("mail_from", args.mail_from)
+
+        domain      = session.get("domain", "pentest.local")
+        methods     = session.get("methods", ["RCPT"])
+        rcpt_domain = session.get("rcpt_domain", None)
+        mail_from   = session.get("mail_from", f"noreply@{domain}")
+        mta_profile = session.get("mta_profile", MTA_DEFAULT_PROFILE)
+        fp_banner   = session.get("fp_banner", "")
+        ehlo_caps   = session.get("ehlo_caps", "")
+
+        # ── ADJUSTABLE settings — CLI overrides, else from checkpoint ────────
+        if "--timing" not in cli and "-T" not in cli:
+            args.timing = session.get("timing", args.timing)
+        if "--threads" not in cli:
+            args.threads = session.get("threads", args.threads)
+        if "--batch" not in cli and "-b" not in cli:
+            args.batch = session.get("batch", args.batch)
+        if "--delay" not in cli:
+            args.delay = session.get("delay", args.delay)
+        if "--timeout" not in cli:
+            args.timeout = session.get("timeout", args.timeout)
+        if "--starttls" not in cli and "--no-starttls" not in cli:
+            args.starttls    = session.get("starttls", args.starttls)
+            args.no_starttls = session.get("no_starttls", args.no_starttls)
+        # verbose: NEVER restored — always from CLI
+
+        restored = load_checkpoint(args.target)
+        with _completed_lock:
+            _completed_set.update(restored)
+
+        with progress_lock:
+            progress_state["done"]       = len(_completed_set)
+            progress_state["start_time"] = time.time()
+            progress_state["valid"]      = counts_data.get("valid", 0)
+            progress_state["potential"]  = counts_data.get("potential", 0)
+
+        print(ok(f"Session restored — {len(_completed_set)} users already done"))
+
+        return dict(
+            domain=domain, methods=methods, rcpt_domain=rcpt_domain,
+            mail_from=mail_from, mta_profile=mta_profile,
+            fp_banner=fp_banner, ehlo_caps=ehlo_caps,
+            starttls_advertised=False,
+            preflight_mail_from=mail_from,
         )
-        if isinstance(domain_result, tuple):
-            domain, rcpt_domain_preset = domain_result
-        else:
-            domain, rcpt_domain_preset = domain_result, None
-        args.domain = domain
-    else:
-        rcpt_domain_preset = rcpt_domain
 
-    # --rcpt-domain overrides interactive prompt — set before preflight
+    except Exception as e:
+        print(err(f"Failed to load checkpoint: {e}"))
+        sys.exit(1)
+
+
+# ── Session setup: FRESH scan path ─────────────────────────────────────────────
+
+def session_setup_fresh(args, cli):
+    """
+    Set up a brand-new scan session.
+    Probes target, fingerprints MTA, resolves EHLO domain, asks for target domain,
+    detects STARTTLS, runs optional preflight check.
+    Returns a session dict with all scan settings.
+    """
+    # ── Parse methods ──────────────────────────────────────────────────────────
+    methods = parse_methods(args.method)
+
+    # ── Probe target — single connection: banner + EHLO caps ──────────────────
+    mta_profile = MTA_DEFAULT_PROFILE
+    print(f"\n[*] Probing target …")
+    fp_banner   = ""
+    ehlo_caps   = ""
+    probe_domain = args.ehlo or "probe.local"
+    try:
+        s_probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s_probe.settimeout(args.timeout)
+        s_probe.connect((args.target, args.port))
+        try:
+            fp_banner = s_probe.recv(4096).decode(errors="replace")
+        except socket.timeout:
+            fp_banner = ""
+        ehlo_res = send_cmd(s_probe, f"EHLO {probe_domain}\r\n", False)
+        if not ehlo_res.startswith("250"):
+            ehlo_res = send_cmd(s_probe, f"HELO {probe_domain}\r\n", False)
+        ehlo_caps = ehlo_res
+        s_probe.send(b"QUIT\r\n")
+        s_probe.close()
+    except Exception as e:
+        print(warn(f"Probe failed: {e}"))
+        if is_fatal_connection_error(e):
+            print(err("Target unreachable — aborting."))
+        sys.exit(1)
+
+    # ── Fingerprint MTA from banner ────────────────────────────────────────────
+    mta_profile = fingerprint_mta(fp_banner)
+    if args.server_type:
+        override = args.server_type.lower()
+        for key, profile in MTA_PROFILES.items():
+            if override in key or override in profile["name"].lower():
+                mta_profile = profile
+                print(detail(f"MTA overridden by --server-type: {mta_profile['name']}"))
+                break
+        else:
+            print(warn(f"--server-type '{args.server_type}' not recognised — using fingerprint result"))
+
+    mta_name = mta_profile["name"]
+    if has_banner(fp_banner):
+        print(f"[*] MTA detected : {CYAN}{mta_name}{RESET}")
+        print(f"[*] Banner       : {fp_banner.strip()[:80]}")
+    else:
+        print(f"[*] MTA detected : {CYAN}{mta_name}{RESET}")
+        print(warn("No informative banner — server may be hardened."))
+    print(detail(f"{mta_name}: {mta_profile['notes']}"))
+
+    if "-m" not in cli and "--method" not in cli:
+        suggested = mta_profile["reliable"]
+        if [suggested] != methods:
+            print(detail(f"Auto-selecting method {suggested} based on {mta_name} profile."))
+            methods = [suggested]
+    for m in methods:
+        if m == "VRFY" and mta_profile["vrfy"] is False:
+            print(warn(f"VRFY is known to be disabled on {mta_name} — consider switching to RCPT."))
+        if m == "EXPN" and mta_profile["expn"] is False:
+            print(warn(f"EXPN is known to be disabled on {mta_name} — consider switching to RCPT."))
+
+    # ── Phase 1: EHLO domain ──────────────────────────────────────────────────
+    ehlo_domain = resolve_ehlo_domain(
+        fp_banner, mta_profile, args.ehlo,
+        args.target, args.port, args.timeout,
+        args.verbose, ehlo_caps=ehlo_caps, force=args.force
+    )
+    domain = ehlo_domain
+
+    # ── Phase 2: Target domain for RCPT TO / MAIL FROM ────────────────────────
+    if args.domain_target:
+        target_domain = args.domain_target
+        print(f"[*] Target domain: {CYAN}{target_domain}{RESET} (from -d)")
+        rcpt_domain_preset = target_domain
+    else:
+        banner_fqdn = extract_domain_from_banner(fp_banner)
+        target_domain = ask_target_domain(banner_fqdn, domain, mta_profile)
+        rcpt_domain_preset = target_domain
+
+    # --rcpt-domain overrides -d specifically for RCPT TO
     if getattr(args, 'rcpt_domain', None) is not None:
         if args.rcpt_domain.lower() == "none":
             rcpt_domain_preset = None
@@ -1294,33 +1331,124 @@ def main():
             rcpt_domain_preset = args.rcpt_domain
             print(f"[*] RCPT domain  : {rcpt_domain_preset} (--rcpt-domain)")
 
-    # ── STARTTLS — from probe EHLO response, no extra connection needed ────────
-    if not resumed_session:
-      starttls_advertised = "STARTTLS" in ehlo_caps.upper() or "STARTTLS" in fp_banner.upper()
-      if starttls_advertised:
-          print(f"[*] STARTTLS     : {GREEN}advertised by server{RESET}")
-          cli = sys.argv[1:]
-          if "--starttls" not in cli and "--no-starttls" not in cli:
-              tls_choice = safe_input(f"[?] Server supports STARTTLS. Use it? [y/n] (default: y): ").strip().lower()
-              if tls_choice in ("n", "no"):
-                  args.no_starttls = True
-                  print(f"[*] STARTTLS skipped")
-              else:
-                  args.starttls = True
-                  print(f"[*] STARTTLS enabled")
-      else:
-          
-          print(f"[*] STARTTLS     : {GRAY}not advertised{RESET}")
-          if args.starttls:
-              print(f"  {YELLOW}[!] --starttls forced but server did not advertise it{RESET}")
+    # ── STARTTLS ──────────────────────────────────────────────────────────────
+    starttls_advertised = "STARTTLS" in ehlo_caps.upper() or "STARTTLS" in fp_banner.upper()
+    if starttls_advertised:
+        print(f"[*] STARTTLS     : {GREEN}advertised{RESET}")
+        if "--starttls" not in cli and "--no-starttls" not in cli:
+            tls_choice = safe_input(ask("Server supports STARTTLS. Use it? [y/n] (default: y): ")).strip().lower()
+            if tls_choice in ("n", "no"):
+                args.no_starttls = True
+                print("[*] STARTTLS skipped")
+            else:
+                args.starttls = True
+                print(ok("STARTTLS enabled"))
     else:
-        print(f"[*] STARTTLS     : restored ({'enabled' if args.starttls else 'disabled'})")
-    # ── MAIL FROM — preliminary resolve for preflight use ────────────────────
-    # Full resolve happens after preflight (methods/rcpt_domain may change)
-    # For preflight we use --mail-from if set, otherwise a generic placeholder
-    mail_from = args.mail_from if args.mail_from else f"noreply@{domain}"
+        print(f"[*] STARTTLS     : {GRAY}not advertised{RESET}")
+        if args.starttls:
+            print(warn("--starttls forced but server did not advertise it"))
 
-    # ── Build user list — stream line by line, deduplicate as we go ──────────
+    # ── Preflight MAIL FROM — uses confirmed target domain ────────────────────
+    _ptd = rcpt_domain_preset if rcpt_domain_preset else domain
+    preflight_mail_from = args.mail_from if args.mail_from else f"noreply@{_ptd}"
+
+    # ── Pre-flight check ──────────────────────────────────────────────────────
+    rcpt_domain = rcpt_domain_preset
+
+    if not args.no_preflight:
+        run_preflight  = True
+        preflight_mode = args.preflight_mode
+        user_set_mode  = "--preflight-mode" in sys.argv[1:]
+
+        if not user_set_mode:
+            print()
+            pf_choice = safe_input(ask("Run pre-flight check? [y/n] (default: y): ")).strip().lower()
+            if pf_choice in ("n", "no"):
+                run_preflight = False
+                print("[*] Pre-flight skipped.")
+            else:
+                mode_choice = safe_input(ask("Pre-flight mode — [a]ll methods or [s]elected only? (default: a): ")).strip().lower()
+                preflight_mode = "selected" if mode_choice in ("s", "selected") else "all"
+                print(f"[*] Pre-flight mode: {preflight_mode}")
+
+        if run_preflight:
+            methods, pf_rcpt_result = preflight_check(
+                args.target, args.port, domain, methods,
+                args.timeout, args.verbose, preflight_mail_from,
+                args.starttls, args.no_starttls, args.auth_user, args.auth_pass,
+                preflight_mode=preflight_mode, mta_profile=mta_profile,
+                rcpt_domain=rcpt_domain, force=args.force,
+                no_method_switch=args.no_method_switch
+            )
+            if pf_rcpt_result != "ASK_LATER":
+                rcpt_domain = pf_rcpt_result
+    else:
+        print("\n[*] Pre-flight skipped (--no-preflight).")
+
+    # ── Final MAIL FROM ───────────────────────────────────────────────────────
+    if args.mail_from:
+        mail_from = args.mail_from
+    elif rcpt_domain:
+        mail_from = f"noreply@{rcpt_domain}"
+    else:
+        mail_from = f"noreply@{domain}"
+
+    return dict(
+        domain=domain, methods=methods, rcpt_domain=rcpt_domain,
+        mail_from=mail_from, mta_profile=mta_profile,
+        fp_banner=fp_banner, ehlo_caps=ehlo_caps,
+        starttls_advertised=starttls_advertised,
+        preflight_mail_from=preflight_mail_from,
+    )
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+
+def main():
+    print(BANNER)
+    args = get_args()
+    cli  = sys.argv[1:]
+
+    # ── Apply timing template ──────────────────────────────────────────────────
+    tmpl = TIMING_TEMPLATES[args.timing]
+    if "--delay"   not in cli: args.delay   = tmpl["delay"]
+    if "--timeout" not in cli: args.timeout = tmpl["timeout"]
+    if "--batch"   not in cli and "-b" not in cli: args.batch = tmpl["batch"]
+    effective = args.batch * args.threads if args.threads > 1 else args.batch
+    concurrency_note = f"  (effective {effective} users/cycle across {args.threads} threads)" if args.threads > 1 else ""
+    print(f"[*] Timing   : T{args.timing} {tmpl['name']} — delay={args.delay}s  timeout={args.timeout}s  batch={args.batch}{concurrency_note}")
+    if args.threads * args.batch >= 50:
+        print(warn(f"High concurrency ({args.threads} threads × batch {args.batch}) — may trigger rate limits"))
+
+    # ── Sanity check: -u must be a username not a file path ──────────────────
+    if args.user:
+        u = args.user.strip()
+        if os.path.sep in u or (os.path.exists(u) and os.path.isfile(u)):
+            print(err(f"'-u {u}' looks like a file path."))
+            print(f"    To scan a wordlist use  : -w {u}")
+            print(f"    To test a single user   : -u <username>  (e.g. -u root)")
+            sys.exit(1)
+
+    # ── Validate target ───────────────────────────────────────────────────────
+    if not args.resume and not args.target:
+        print(err("-t/--target is required unless using --resume"))
+        sys.exit(1)
+
+    # ── Session setup — two clean paths ──────────────────────────────────────
+    if args.resume:
+        sess = session_setup_resume(args, cli)
+    else:
+        sess = session_setup_fresh(args, cli)
+
+    domain      = sess["domain"]
+    methods     = sess["methods"]
+    rcpt_domain = sess["rcpt_domain"]
+    mail_from   = sess["mail_from"]
+    mta_profile = sess["mta_profile"]
+    fp_banner   = sess["fp_banner"]
+    starttls_advertised = sess["starttls_advertised"]
+
+    # ── Build user list ───────────────────────────────────────────────────────
     seen      = set()
     all_users = []
 
@@ -1332,116 +1460,26 @@ def main():
 
     if args.user:
         add_user(args.user)
-
     if args.name:
         variations = generate_username_variations(args.name)
         print(f"[*] Generated {len(variations)} username variations from '{args.name}':")
         for v in variations:
             print(f"    {v}")
             add_user(v)
-
     if args.wordlist:
         try:
             with open(args.wordlist, "r", errors="ignore") as fh:
-                for line in fh:          # one line at a time — no full load
+                for line in fh:
                     add_user(line)
         except FileNotFoundError:
-            print(f"[!] Wordlist not found: {args.wordlist}")
+            print(err(f"Wordlist not found: {args.wordlist}"))
             sys.exit(1)
 
     if not all_users:
-        print("[!] Error: provide at least -u <user>, --name <n>, or -w <wordlist>.")
+        print(err("Provide at least -u <user>, --name <n>, or -w <wordlist>."))
         sys.exit(1)
     total = len(all_users)
-    # ── Pre-flight ─────────────────────────────────────────────────────────────
-    if not resumed_session:
-      if args.no_preflight:
-          print("\n[*] Pre-flight skipped (--no-preflight).")
-      else:
-          run_preflight  = True
-          preflight_mode = args.preflight_mode
-          user_set_mode  = "--preflight-mode" in sys.argv[1:]
-  
-          if not user_set_mode:
-              print()
-              pf_choice = safe_input("[?] Run pre-flight check? [y/n] (default: y): ").strip().lower()
-              if pf_choice in ("n", "no"):
-                  run_preflight = False
-                  print("[*] Pre-flight skipped.")
-              else:
-                  mode_choice = safe_input("[?] Pre-flight mode — [a]ll methods or [s]elected only? (default: a): ").strip().lower()
-                  preflight_mode = "selected" if mode_choice in ("s", "selected") else "all"
-                  print(f"[*] Pre-flight mode: {preflight_mode}")
-  
-          if run_preflight:
-              # Resolve preflight rcpt_domain:
-              # ASK_LATER = RCPT not in initial methods — preflight will ask if needed
-              # None = -d provided, not yet decided — preflight will ask if needed
-              # anything else = already decided by user
-              pf_rcpt_domain = None if rcpt_domain_preset in (None, "ASK_LATER") else rcpt_domain_preset
-              methods, pf_rcpt_result = preflight_check(
-                  args.target, args.port, domain,
-                  methods, args.timeout, args.verbose,
-                  mail_from,
-                  args.starttls, args.no_starttls, args.auth_user, args.auth_pass,
-                  preflight_mode=preflight_mode,
-                  mta_profile=mta_profile,
-                  rcpt_domain=pf_rcpt_domain,
-                  force=args.force,
-                  no_method_switch=args.no_method_switch
-              )
-              # If preflight set rcpt_domain (even to None for plain username), use it
-              # Use sentinel "ASK_LATER" to mean "not set by preflight"
-              if pf_rcpt_result != "ASK_LATER":
-                  rcpt_domain_preset = pf_rcpt_result  # may be None (plain) or a domain string
 
-    # ── RCPT format — ask only if RCPT is in final methods ───────────────────
-    def ask_rcpt_domain(domain, mta_profile):
-        """Interactive prompt for RCPT TO domain format."""
-        print()
-        print(f"  {GRAY}Note: EHLO is just a handshake — RCPT TO domain can be different{RESET}")
-        rcpt_fmt = mta_profile.get("rcpt_format", "both")
-        default_choice = "1" if rcpt_fmt != "plain" else "3"
-        rcpt_choice = safe_input(f"[?] What domain to use in RCPT TO?\n"
-                            f"    [1] Same as EHLO ({domain})\n"
-                            f"    [2] Different domain (you specify)\n"
-                            f"    [3] No domain — plain username only\n"
-                            f"    Choice (default: {default_choice}): ").strip()
-        if rcpt_choice == "2":
-            raw = safe_input("[?] Enter RCPT TO domain: ")
-            rd = raw.strip().strip('"\'').strip() or domain
-            print(f"[*] RCPT format: user@{rd}")
-            return rd
-        elif rcpt_choice == "3" or (rcpt_choice == "" and default_choice == "3"):
-            print(f"[*] RCPT format: plain username (no @domain)")
-            return None
-        else:
-            print(f"[*] RCPT format: user@{domain}")
-            return domain
-    
-    if not resumed_session:
-      rcpt_domain = rcpt_domain_preset
-
-      # ASK_LATER means RCPT wasn't in initial methods — check if it is now after preflight
-      if rcpt_domain == "ASK_LATER":
-          if "RCPT" in methods:
-              rcpt_domain = ask_rcpt_domain(domain, mta_profile)
-          else:
-              rcpt_domain = None
-  
-      # rcpt_domain_preset is None means -d was provided — ask if RCPT in final methods
-      elif rcpt_domain_preset is None and "RCPT" in methods:
-          rcpt_domain = ask_rcpt_domain(domain, mta_profile)
-  
-      # ── MAIL FROM — final resolve after preflight and RCPT domain settled ───────
-      if args.mail_from:
-          mail_from = args.mail_from                      # --mail-from always wins
-      elif "RCPT" not in methods:
-          mail_from = f"noreply@{domain}"                 # VRFY/EXPN only — not actually sent
-      elif rcpt_domain:
-          mail_from = f"noreply@{rcpt_domain}"            # match RCPT domain for consistency
-      else:
-          mail_from = f"noreply@{domain}"                 # plain username mode — use EHLO domain
 
     # ── Final session + scan summary ──────────────────────────────────────────
     print(f"\n[*] ── Session ────────────────────────────────────")
@@ -1455,10 +1493,8 @@ def main():
         print(f"[*] Name     : {args.name}")
     print(f"[*] Users    : {total}{f' (resumed: {len(_completed_set)} done)' if _completed_set else ''}")
     print(f"[*] Output   : {args.output} ({args.output_format})")
-    if args.starttls:
-        print(f"[*] STARTTLS : forced")
-    elif getattr(args, 'no_starttls', False):
-        print(f"[*] STARTTLS : disabled")
+    _tls_status = "forced" if args.starttls else ("disabled" if getattr(args, 'no_starttls', False) else ("restored" if args.resume else ("enabled (auto)" if starttls_advertised else "not available")))
+    print(f"[*] STARTTLS : {_tls_status}")
     if args.auth_user:
         print(f"[*] AUTH     : {args.auth_user}")
     if args.threads > 1:
@@ -1476,14 +1512,23 @@ def main():
 
     # ── Build session config for checkpoint ───────────────────────────────────
     session_config = {
+        # ── FIXED — always restored on resume ──────────────────────────────
         "target":        args.target,
         "port":          args.port,
-        "domain":        domain,
+        "domain":        domain,                              # EHLO domain
+        "target_domain": getattr(args, 'domain_target', None),  # RCPT/MAIL FROM domain
         "methods":       methods,
         "rcpt_domain":   rcpt_domain,
         "mail_from":     mail_from,
         "output":        args.output,
         "output_format": args.output_format,
+        "auth_user":     args.auth_user,
+        "auth_pass":     getattr(args, 'auth_pass', None),
+        "wordlist":      args.wordlist,
+        "mta_profile":   mta_profile,
+        "fp_banner":     fp_banner,
+        "ehlo_caps":     ehlo_caps,
+        # ── ADJUSTABLE — CLI can override on resume ─────────────────────────
         "timing":        args.timing,
         "threads":       args.threads,
         "batch":         args.batch,
@@ -1491,12 +1536,8 @@ def main():
         "timeout":       args.timeout,
         "starttls":      args.starttls,
         "no_starttls":   args.no_starttls,
-        "auth_user":     args.auth_user,
-        "wordlist":      args.wordlist,
-        "mta_profile":   mta_profile,
-        "fp_banner": fp_banner,
-        "ehlo_caps": ehlo_caps,
-        "start_time": progress_state["start_time"],
+        # verbose intentionally excluded — always controlled by CLI per run
+        "start_time":    progress_state["start_time"],
     }
 
     # ── Scan ───────────────────────────────────────────────────────────────────
