@@ -1790,9 +1790,9 @@ def main():
     clear_checkpoint()
     print("\n" + ok("Scan complete."))
     total_time = time.time() - progress_state["start_time"]
-    minutes = total_time["start_time"] // 60
-    seconds = total_time["start_time"] % 60
-    print(f"\nTotal scan time: {minutes}m {seconds:.2f}s")
+    minutes = int(total_time // 60)
+    seconds = total_time % 60
+    print(f"Total scan time: {minutes}m {seconds:.2f}s")
     print(info(f"Valid     : {GREEN}{BOLD}{valid_count}{RESET}"))
     print(info(f"Potential : {YELLOW}{potential_count}{RESET} (252 — verify manually)"))
     if valid_count > 0 or potential_count > 0:
