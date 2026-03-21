@@ -488,8 +488,8 @@ def resolve_ehlo_domain(banner, mta_profile, provided_ehlo=None, target=None, po
             if verbose:
                 print("  " + ok("EHLO accepted — verified during probe"))
         elif target:
-            ok, result = test_ehlo(target, port, provided_ehlo, timeout, verbose)
-            if not ok:
+            ehlo_ok, result = test_ehlo(target, port, provided_ehlo, timeout, verbose)
+            if not ehlo_ok:
                 print("  " + warn(f"EHLO warning: {result}"))
                 if not force:
                     proceed = safe_input("[?] EHLO test failed. Proceed anyway? [y/n] (default: y): ").strip().lower()
@@ -530,8 +530,8 @@ def resolve_ehlo_domain(banner, mta_profile, provided_ehlo=None, target=None, po
             break
         elif target:
             print(info(f"Testing EHLO with '{ehlo_domain}' …"))
-            ok, result = test_ehlo(target, port, ehlo_domain, timeout, verbose)
-            if ok:
+            ehlo_ok, result = test_ehlo(target, port, ehlo_domain, timeout, verbose)
+            if ehlo_ok:
                 if verbose:
                     print("  " + ok("EHLO accepted — server responded 250"))
                 break
