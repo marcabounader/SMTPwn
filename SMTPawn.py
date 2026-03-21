@@ -1454,7 +1454,7 @@ def main():
     mta_profile = sess["mta_profile"]
     fp_banner   = sess["fp_banner"]
     starttls_advertised = sess["starttls_advertised"]
-
+    ehlo_caps = sess["ehlo_caps]
     # ── Build user list ───────────────────────────────────────────────────────
     seen      = set()
     all_users = []
