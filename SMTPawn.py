@@ -1415,7 +1415,10 @@ def main():
     print(BANNER)
     args = get_args()
     cli  = sys.argv[1:]
-
+    # ── Validate target ───────────────────────────────────────────────────────
+    if not args.resume and not args.target:
+        print(err("-t/--target is required unless using --resume"))
+        sys.exit(1)
     # ── Apply timing template ──────────────────────────────────────────────────
     tmpl = TIMING_TEMPLATES[args.timing]
     if "--delay"   not in cli: args.delay   = tmpl["delay"]
@@ -1436,10 +1439,7 @@ def main():
             print(f"    To test a single user   : -u <username>  (e.g. -u root)")
             sys.exit(1)
 
-    # ── Validate target ───────────────────────────────────────────────────────
-    if not args.resume and not args.target:
-        print(err("-t/--target is required unless using --resume"))
-        sys.exit(1)
+
 
     # ── Session setup — two clean paths ──────────────────────────────────────
     if args.resume:
