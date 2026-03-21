@@ -1419,6 +1419,22 @@ def main():
     if not args.resume and not args.target:
         print(err("-t/--target is required unless using --resume"))
         sys.exit(1)
+
+    # ── Session setup — two clean paths ──────────────────────────────────────
+    if args.resume:
+        sess = session_setup_resume(args, cli)
+    else:
+        sess = session_setup_fresh(args, cli)
+
+    domain      = sess["domain"]
+    methods     = sess["methods"]
+    rcpt_domain = sess["rcpt_domain"]
+    mail_from   = sess["mail_from"]
+    mta_profile = sess["mta_profile"]
+    fp_banner   = sess["fp_banner"]
+    starttls_advertised = sess["starttls_advertised"]
+    ehlo_caps = sess["ehlo_caps"]
+  
     # ── Apply timing template ──────────────────────────────────────────────────
     tmpl = TIMING_TEMPLATES[args.timing]
     if "--delay"   not in cli: args.delay   = tmpl["delay"]
@@ -1439,22 +1455,6 @@ def main():
             print(f"    To test a single user   : -u <username>  (e.g. -u root)")
             sys.exit(1)
 
-
-
-    # ── Session setup — two clean paths ──────────────────────────────────────
-    if args.resume:
-        sess = session_setup_resume(args, cli)
-    else:
-        sess = session_setup_fresh(args, cli)
-
-    domain      = sess["domain"]
-    methods     = sess["methods"]
-    rcpt_domain = sess["rcpt_domain"]
-    mail_from   = sess["mail_from"]
-    mta_profile = sess["mta_profile"]
-    fp_banner   = sess["fp_banner"]
-    starttls_advertised = sess["starttls_advertised"]
-    ehlo_caps = sess["ehlo_caps"]
     # ── Build user list ───────────────────────────────────────────────────────
     seen      = set()
     all_users = []
