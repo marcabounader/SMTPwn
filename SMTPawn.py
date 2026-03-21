@@ -265,30 +265,60 @@ def parse_methods(method_str):
 
 
 def generate_username_variations(full_name):
-    """Generate common username formats from a full name."""
     parts = full_name.strip().lower().split()
-    if len(parts) < 2:
-        return [parts[0]] if parts else []
-    first, last = parts[0], parts[-1]
-    fi = first[0] if first else ""
-    templates = [
-        first,
-        last,
-        f"{first}.{last}",
-        f"{first}{last}",
-        f"{first}_{last}",
-        f"{fi}{last}",
-        f"{fi}.{last}",
-        f"{fi}_{last}",
-        f"{last}.{first}",
-        f"{last}{first}",
-    ]
-    seen_v, variations = set(), []
-    for u in templates:
-        if u and u not in seen_v:
-            seen_v.add(u)
-            variations.append(u)
-    return variations
+    if not parts:
+        return []
+
+    first = parts[0]
+    last_parts = parts[1:]
+
+    variations = set()
+
+    # Basic
+    variations.add(first)
+
+    if last_parts:
+        last_simple = last_parts[-1]
+        last_full = "".join(last_parts)
+        last_dot = ".".join(last_parts)
+        last_us = "_".join(last_parts)
+
+        fi = first[0]
+
+        # Core combos
+        combos = [
+            last_simple,
+            last_full,
+            last_dot,
+            last_us,
+
+            f"{first}.{last_simple}",
+            f"{first}.{last_full}",
+            f"{first}_{last_full}",
+            f"{first}{last_full}",
+
+            f"{fi}{last_simple}",
+            f"{fi}{last_full}",
+            f"{fi}.{last_simple}",
+            f"{fi}.{last_full}",
+            f"{fi}_{last_simple}",
+            f"{fi}_{last_full}",
+
+            f"{last_simple}.{first}",
+            f"{last_full}.{first}",
+            f"{last_simple}{first}",
+            f"{last_full}{first}",
+
+            # Extra realistic patterns
+            f"{first[:3]}{last_simple}",
+            f"{first}{last_simple[:3]}",
+            f"{fi}{last_simple[:3]}",
+        ]
+
+        for c in combos:
+            variations.add(c)
+
+    return sorted(v for v in variations if v)
 
 
 # ── Network helpers ────────────────────────────────────────────────────────────
