@@ -589,8 +589,11 @@ def connect_and_init(target, port, domain, timeout, verbose, use_starttls=False,
                     continue
 
             if not auth_ok:
-                last = ar if "ar" in dir() else "no response"
-                print(err(f"AUTH failed ({last.strip()[:60]})"))
+                try:
+                    last = ar.strip()[:60]
+                except NameError:
+                    last = "no mechanism succeeded"
+                print(err(f"AUTH failed ({last})"))
                 s.close()
                 return None, banner
 
@@ -1879,7 +1882,7 @@ def session_setup_relay(args, cli):
         args.verbose, ehlo_caps=ehlo_caps, force=args.force
     )
 
-    if args.relay_domain:
+    if args.relay_domain and args.relay_domain != "__spf_skip__":
         target_domain = args.relay_domain
         print(info(f"Relay domain : {CYAN}{target_domain}{RESET} (from --relay-domain)"))
     else:
@@ -2296,7 +2299,7 @@ def session_setup_fresh(args, cli):
         rcpt_domain_preset = target_domain
 
     # --rcpt-domain overrides -d specifically for RCPT TO
-    if getattr(args, 'rcpt_domain', None) is not None:
+    if args.rcpt_domain is not None:
         if args.rcpt_domain.lower() == "none":
             rcpt_domain_preset = None
             print(info("RCPT domain  : plain username (--rcpt-domain none)"))
@@ -2342,7 +2345,7 @@ def session_setup_fresh(args, cli):
                 args.starttls, args.no_starttls,
                 args.auth_user, args.auth_pass,
                 mechanisms=auth_mechs_adv or None,
-                use_ssl=getattr(args, "ssl", False)
+                use_ssl=args.ssl
             )
             if auth_ok:
                 print(ok(f"AUTH success — {args.auth_user} authenticated via {auth_detail}"))
@@ -2477,7 +2480,6 @@ def main():
     brute_mode = bool(args.brute_user or args.brute_pass)
 
     # ── Port-aware auto-configuration ────────────────────────────────────────
-    if not hasattr(args, "ssl"): args.ssl = False
     if args.port == 465 and not args.ssl:
         args.ssl = True
         print(info("Port 465 detected — implicit SSL/TLS enabled automatically (--ssl)"))
@@ -2553,8 +2555,14 @@ def main():
         if not args.target:
             print(err("--spf-check requires -t/--target")); sys.exit(1)
 
-        # Use relay session setup — same probe/EHLO/STARTTLS flow
+        # Use relay session setup for probe/fingerprint/EHLO/STARTTLS.
+        # Pre-set relay_domain to a sentinel so the relay domain prompt
+        # is skipped — SPF check does not need a relay domain.
+        _saved_relay_domain = args.relay_domain
+        if not args.relay_domain:
+            args.relay_domain = "__spf_skip__"
         spf_sess    = session_setup_relay(args, cli)
+        args.relay_domain = _saved_relay_domain  # restore
         ehlo_domain = spf_sess["ehlo_domain"]
 
         # Resolve domain to spoof
@@ -2562,12 +2570,10 @@ def main():
             spoof_domain = args.spf_domain
             print(info(f"Spoof domain : {CYAN}{spoof_domain}{RESET} (from --spf-domain)"))
         else:
-            # Default to the domain extracted from the banner
-            banner_fqdn  = spf_sess.get("target_domain") or ehlo_domain
-            # Strip leading hostname label if FQDN (mail.example.com -> example.com)
-            parts = banner_fqdn.rstrip(".").split(".")
-            spoof_domain = ".".join(parts[1:]) if len(parts) > 2 else banner_fqdn
-            print(info(f"Spoof domain : {CYAN}{spoof_domain}{RESET} (derived from banner)"))
+            # Derive from ehlo_domain: mail.isf.gov.lb → isf.gov.lb
+            parts        = ehlo_domain.rstrip(".").split(".")
+            spoof_domain = ".".join(parts[1:]) if len(parts) > 2 else ehlo_domain
+            print(info(f"Spoof domain : {CYAN}{spoof_domain}{RESET} (derived from EHLO)"))
 
         print(f"\n{BLUE}[*] ── SPF check — pre-run summary ─────────────────{RESET}")
         print(f"[*] Target   : {CYAN}{args.target}:{args.port}{RESET}")
@@ -2764,7 +2770,7 @@ def main():
     print(f"[*] Output   : {args.output} ({args.output_format})")
     if args.starttls:
         _tls_status = f"{GREEN}forced{RESET}"
-    elif getattr(args, 'no_starttls', False):
+    elif args.no_starttls:
         _tls_status = f"{GRAY}disabled{RESET}"
     elif args.resume:
         _tls_status = f"{CYAN}restored{RESET}"
@@ -2794,7 +2800,7 @@ def main():
         "target":        args.target,
         "port":          args.port,
         "domain":        domain,                              # EHLO domain
-        "target_domain": getattr(args, 'domain_target', None),  # RCPT/MAIL FROM domain
+        "target_domain": args.domain_target,  # RCPT/MAIL FROM domain
         "methods":       methods,
         "rcpt_domain":   rcpt_domain,
         "mail_from":     mail_from,
@@ -2869,7 +2875,7 @@ def main():
             s, _ = connect_and_init(
                 args.target, args.port, domain, args.timeout, args.verbose,
                 args.starttls, args.no_starttls, args.auth_user, args.auth_pass,
-                use_ssl=getattr(args, "ssl", False)
+                use_ssl=args.ssl
             )
             if not s:
                 conn_retry_count += 1
