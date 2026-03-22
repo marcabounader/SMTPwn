@@ -1658,8 +1658,13 @@ def ask_relay_domain(banner_fqdn, ehlo_domain):
 
 def session_setup_relay(args, cli):
     """
-    Probe -> fingerprint -> EHLO -> relay domain -> STARTTLS.
+    Probe -> fingerprint -> EHLO -> relay domain -> STARTTLS -> AUTH awareness.
     No preflight, no methods, no user list, no checkpoint.
+
+    AUTH note: relay tests are intentionally run unauthenticated — that is the
+    point. If the server requires auth, every MAIL FROM will return 530 and all
+    tests will show 'skipped', making the result meaningless. We warn about this
+    upfront so the user can decide whether to proceed.
     """
     print("\n" + info("Probing target …"))
     fp_banner, ehlo_caps = probe_target(args.target, args.port, args.timeout,
@@ -1703,6 +1708,37 @@ def session_setup_relay(args, cli):
         print(info(f"STARTTLS     : {GRAY}not advertised{RESET}"))
         if args.starttls:
             print(warn("--starttls forced but server did not advertise it"))
+
+    # ── AUTH awareness for relay testing ──────────────────────────────────────
+    # Relay tests must run unauthenticated — that is what proves a relay is open.
+    # If the server requires auth, all MAIL FROM commands will return 530 and
+    # every test will show 'skipped', making the result meaningless.
+    # Detect this now and warn the user before wasting the test run.
+    auth_mechs_adv = parse_auth_mechanisms(ehlo_caps)
+    if auth_mechs_adv:
+        print(info(f"AUTH         : {CYAN}advertised{RESET} — mechs: {' '.join(auth_mechs_adv)}"))
+        print(warn("Server advertises AUTH — relay tests run unauthenticated by design."))
+        print(warn("A server that requires auth before MAIL FROM will show all tests as 'skipped'."))
+        print(detail("This is expected and means the server is not an open relay to external senders."))
+    else:
+        # Probe silently for hidden auth requirement
+        print(info("Probing for silent AUTH requirement …"))
+        auth_probe = probe_auth_required(
+            args.target, args.port, ehlo_domain, args.timeout, args.verbose,
+            args.starttls, args.no_starttls, target_domain
+        )
+        if auth_probe == "required":
+            print(warn("Server requires authentication (not advertised in EHLO)."))
+            print(warn("All relay tests will show 'skipped' — the server gates at MAIL FROM."))
+            print(detail("This means the server is not an open relay to unauthenticated senders."))
+            if not args.force:
+                c = safe_input(ask("Continue anyway to confirm? [y/n] (default: y): ")).strip().lower()
+                if c in ("n", "no"):
+                    sys.exit(0)
+        elif auth_probe == "not_needed":
+            print(info(f"AUTH         : {GREEN}not required{RESET} — relay tests will run cleanly"))
+        else:
+            print(info(f"AUTH         : {GRAY}unknown{RESET} — probe inconclusive, proceeding"))
 
     return dict(ehlo_domain=ehlo_domain, target_domain=target_domain)
 
