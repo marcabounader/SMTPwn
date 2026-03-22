@@ -204,7 +204,7 @@ def get_args():
     tgt.add_argument("-t", "--target",   required=False, metavar="IP/HOST",
                      help="Target SMTP server IP or hostname")
     tgt.add_argument("-p", "--port",     type=int, default=25, metavar="PORT",
-                     help="SMTP port (default: 25)")
+                     help="SMTP port (default: 25).\n25   = SMTP relay (plaintext + optional STARTTLS)\n587  = SMTP submission (STARTTLS + AUTH required)\n465  = SMTPS — implicit TLS from first byte (use --ssl)\n")
 
     # ── ENUMERATION — user sources ────────────────────────────────────────────
     usr = parser.add_argument_group("ENUMERATION — user sources")
@@ -255,8 +255,10 @@ def get_args():
                      help="Show raw SMTP traffic  ([>] sent / [<] received)")
     con.add_argument("--timeout",             type=float, default=15.0, metavar="SEC",
                      help="Socket timeout in seconds (default: 15.0)")
+    con.add_argument("--ssl",                 action="store_true",
+                     help="Use implicit SSL/TLS from the start (port 465 / SMTPS).\nAuto-enabled when -p 465 is used.")
     con.add_argument("--starttls",            action="store_true",
-                     help="Force STARTTLS upgrade after EHLO")
+                     help="Force STARTTLS upgrade after EHLO.\nAuto-enabled when -p 587 is used.")
     con.add_argument("--no-starttls",         action="store_true",
                      help="Never upgrade to TLS even if server advertises STARTTLS")
     con.add_argument("--auth-user",           default=None, metavar="USER",
@@ -466,26 +468,41 @@ def detect_ratelimit(response):
     return code in RATELIMIT_CODES
 
 
-def connect_and_init(target, port, domain, timeout, verbose, use_starttls=False, no_starttls=False, auth_user=None, auth_pass=None):
+def connect_and_init(target, port, domain, timeout, verbose, use_starttls=False, no_starttls=False,
+                      auth_user=None, auth_pass=None, use_ssl=False):
     """
     Open TCP connection, grab banner, EHLO/HELO handshake.
-    Optionally upgrades to TLS via STARTTLS.
-    Optionally authenticates via AUTH LOGIN.
+    use_ssl=True  : implicit TLS from first byte (port 465 / SMTPS)
+    use_starttls  : STARTTLS upgrade after EHLO (port 587)
+    AUTH          : tries advertised mechanisms in order: LOGIN > PLAIN > CRAM-MD5
     Returns (socket, banner) or (None, None).
     """
+    import base64, hmac, hashlib
     try:
         raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         raw.settimeout(timeout)
         raw.connect((target, port))
-        banner = raw.recv(4096).decode(errors="replace")
+
+        # ── Implicit TLS (port 465) — wrap before any SMTP exchange ──────
+        if use_ssl:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode    = ssl.CERT_NONE
+            s = ctx.wrap_socket(raw, server_hostname=target)
+            if verbose:
+                with print_lock:
+                    print("\r" + " " * 120, end="\r")
+                    print(detail("Implicit TLS established (SMTPS)"))
+        else:
+            s = raw
+
+        banner = s.recv(4096).decode(errors="replace")
         if verbose:
             with print_lock:
                 print("\r" + " " * 120, end="\r")
                 print(f"  {GRAY}[<]{RESET} {banner.strip()}")
 
-        s = raw  # may be replaced with TLS socket below
-
-        # EHLO — always silent (protocol boilerplate), only show on failure
+        # EHLO — always silent, only show on failure
         res = send_cmd(s, f"EHLO {domain}\r\n", False)
         if not res.startswith("250"):
             res = send_cmd(s, f"HELO {domain}\r\n", False)
@@ -494,39 +511,68 @@ def connect_and_init(target, port, domain, timeout, verbose, use_starttls=False,
                 s.close()
                 return None, banner
         if verbose:
-            print(detail(f"EHLO {domain} → 250 OK"))
+            print(detail(f"EHLO {domain} -> 250 OK"))
 
-        # STARTTLS — always silent (protocol boilerplate), only show result
-        server_supports_starttls = "STARTTLS" in res.upper()
-        if not no_starttls and (use_starttls or server_supports_starttls):
-            if server_supports_starttls:
-                tls_res = send_cmd(s, "STARTTLS\r\n", False)
-                if tls_res.startswith("220"):
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode    = ssl.CERT_NONE
-                    s = ctx.wrap_socket(raw, server_hostname=target)
-                    # Re-EHLO after TLS upgrade (required by RFC)
-                    res = send_cmd(s, f"EHLO {domain}\r\n", False)
-                    if verbose:
-                        print("  " + ok("STARTTLS → TLS established"))
+        # ── STARTTLS ──────────────────────────────────────────────────────
+        if not use_ssl:  # STARTTLS not applicable when already on implicit TLS
+            server_supports_starttls = "STARTTLS" in res.upper()
+            if not no_starttls and (use_starttls or server_supports_starttls):
+                if server_supports_starttls:
+                    tls_res = send_cmd(s, "STARTTLS\r\n", False)
+                    if tls_res.startswith("220"):
+                        ctx = ssl.create_default_context()
+                        ctx.check_hostname = False
+                        ctx.verify_mode    = ssl.CERT_NONE
+                        s = ctx.wrap_socket(raw, server_hostname=target)
+                        res = send_cmd(s, f"EHLO {domain}\r\n", False)
+                        if verbose:
+                            print("  " + ok("STARTTLS -> TLS established"))
+                    elif use_starttls:
+                        print(warn(f"STARTTLS requested but server rejected: {tls_res.strip()}"))
                 elif use_starttls:
-                    print(warn(f"STARTTLS requested but server rejected: {tls_res.strip()}"))
-            elif use_starttls:
-                print(warn("--starttls requested but server does not advertise STARTTLS"))
+                    print(warn("--starttls requested but server does not advertise STARTTLS"))
 
-        # AUTH LOGIN
+        # ── AUTH — tries advertised mechanisms, falls back to LOGIN/PLAIN ─
         if auth_user and auth_pass:
-            import base64
-            send_cmd(s, "AUTH LOGIN\r\n", verbose)
-            send_cmd(s, base64.b64encode(auth_user.encode()).decode() + "\r\n", verbose)
-            auth_res = send_cmd(s, base64.b64encode(auth_pass.encode()).decode() + "\r\n", verbose)
-            if not auth_res.startswith("235"):
-                print(err(f"AUTH failed: {auth_res.strip()}"))
+            # Parse advertised mechanisms from the last EHLO response
+            adv_mechs = parse_auth_mechanisms(res)
+            pref      = ["LOGIN", "PLAIN", "CRAM-MD5"]
+            mechs     = [m for m in pref if m in adv_mechs] or ["LOGIN", "PLAIN"]
+
+            auth_ok = False
+            for mech in mechs:
+                try:
+                    if mech == "LOGIN":
+                        r = send_cmd(s, "AUTH LOGIN\r\n", verbose)
+                        if not r.startswith("334"): continue
+                        send_cmd(s, base64.b64encode(auth_user.encode()).decode() + "\r\n", verbose)
+                        ar = send_cmd(s, base64.b64encode(auth_pass.encode()).decode() + "\r\n", verbose)
+                    elif mech == "PLAIN":
+                        plain = base64.b64encode(f"\x00{auth_user}\x00{auth_pass}".encode()).decode()
+                        ar = send_cmd(s, f"AUTH PLAIN {plain}\r\n", verbose)
+                    elif mech == "CRAM-MD5":
+                        r = send_cmd(s, "AUTH CRAM-MD5\r\n", verbose)
+                        if not r.startswith("334"): continue
+                        chal_b64 = r.splitlines()[0].split(None, 1)[-1].strip()
+                        try: chal = base64.b64decode(chal_b64)
+                        except: continue
+                        dig = hmac.new(auth_pass.encode(), chal, hashlib.md5).hexdigest()
+                        resp = base64.b64encode(f"{auth_user} {dig}".encode()).decode()
+                        ar = send_cmd(s, resp + "\r\n", verbose)
+                    else:
+                        continue
+                    if ar.startswith("235"):
+                        auth_ok = True
+                        if verbose: print("  " + ok(f"AUTH {mech} successful"))
+                        break
+                except Exception:
+                    continue
+
+            if not auth_ok:
+                last = ar if "ar" in dir() else "no response"
+                print(err(f"AUTH failed ({last.strip()[:60]})"))
                 s.close()
                 return None, banner
-            if verbose:
-                print("  " + ok("AUTH successful"))
 
         return s, banner
 
@@ -921,7 +967,7 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
     methods_to_test = ["VRFY", "RCPT", "EXPN"] if preflight_mode == "all" else methods
     print(f"\n[*] Pre-flight: testing {preflight_mode} method(s) with garbage user …")
 
-    s, _ = connect_and_init(target, port, domain, timeout, verbose, use_starttls, no_starttls, auth_user, auth_pass)
+    s, _ = connect_and_init(target, port, domain, timeout, verbose, use_starttls, no_starttls, auth_user, auth_pass, use_ssl=False)
     if not s:
         print(warn("Pre-flight connection failed — continuing anyway."))
         return methods, (rcpt_domain if _rcpt_domain_set_by_preflight else "ASK_LATER")
@@ -1305,7 +1351,7 @@ def probe_auth_required(target, port, ehlo_domain, timeout, verbose,
 
     try:
         s, _ = connect_and_init(target, port, ehlo_domain, timeout, False,
-                                use_starttls, no_starttls, None, None)
+                                use_starttls, no_starttls, None, None, use_ssl=False)
         if not s:
             return "unknown"
 
@@ -1339,7 +1385,7 @@ def probe_auth_required(target, port, ehlo_domain, timeout, verbose,
 
 def test_auth_credentials(target, port, domain, timeout, verbose,
                            use_starttls, no_starttls, user, password,
-                           mechanisms=None):
+                           mechanisms=None, use_ssl=False):
     """
     Try a single user/password pair — fresh connection per attempt to avoid
     session poisoning after a failed AUTH.
@@ -1349,7 +1395,7 @@ def test_auth_credentials(target, port, domain, timeout, verbose,
     import base64, hmac, hashlib
 
     s, _ = connect_and_init(target, port, domain, timeout, verbose,
-                             use_starttls, no_starttls, None, None)
+                             use_starttls, no_starttls, None, None, use_ssl=use_ssl)
     if not s:
         return False, "connection failed"
 
@@ -2064,7 +2110,8 @@ def session_setup_fresh(args, cli):
                 args.target, args.port, domain, args.timeout, args.verbose,
                 args.starttls, args.no_starttls,
                 args.auth_user, args.auth_pass,
-                mechanisms=auth_mechs_adv or None
+                mechanisms=auth_mechs_adv or None,
+                use_ssl=getattr(args, "ssl", False)
             )
             if auth_ok:
                 print(ok(f"AUTH success — {args.auth_user} authenticated via {auth_detail}"))
@@ -2197,6 +2244,19 @@ def main():
     if "--batch"   not in cli and "-b" not in cli: args.batch = tmpl["batch"]
 
     brute_mode = bool(args.brute_user or args.brute_pass)
+
+    # ── Port-aware auto-configuration ────────────────────────────────────────
+    if not hasattr(args, "ssl"): args.ssl = False
+    if args.port == 465 and not args.ssl:
+        args.ssl = True
+        print(info("Port 465 detected — implicit SSL/TLS enabled automatically (--ssl)"))
+    if args.port == 587:
+        if not args.starttls and not args.no_starttls and "--starttls" not in cli:
+            args.starttls = True
+            print(info("Port 587 detected — STARTTLS enabled automatically"))
+        if not args.auth_user and not brute_mode and not args.open_relay:
+            print(warn("Port 587 (submission) usually requires authentication."))
+            print(warn("Consider passing --auth-user and --auth-pass."))
 
     # ── Mode 1: OPEN RELAY ────────────────────────────────────────────────────
     if args.open_relay:
@@ -2516,7 +2576,8 @@ def main():
             # Connect
             s, _ = connect_and_init(
                 args.target, args.port, domain, args.timeout, args.verbose,
-                args.starttls, args.no_starttls, args.auth_user, args.auth_pass
+                args.starttls, args.no_starttls, args.auth_user, args.auth_pass,
+                use_ssl=getattr(args, "ssl", False)
             )
             if not s:
                 conn_retry_count += 1
