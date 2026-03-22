@@ -195,6 +195,7 @@ def get_args():
             "  Enumeration  : -t <target> + user source (-u / -w / --name)\n"
             "  Resume       : --resume\n"
             "  Relay test   : -t <target> --open-relay\n"
+            "  SPF check    : -t <target> --spf-check\n"
             "  Auth brute   : -t <target> --brute-user <u> --brute-pass <p>\n"
         ),
         formatter_class=argparse.RawTextHelpFormatter
@@ -311,6 +312,25 @@ def get_args():
                      help="MAIL FROM for relay tests (default: realistic auto-generated)")
     rel.add_argument("--relay-to",            default=None, metavar="ADDRESS",
                      help="RCPT TO for relay tests (default: realistic auto-generated)")
+
+    # ── SPF ENFORCEMENT CHECK ─────────────────────────────────────────────────
+    spf = parser.add_argument_group(
+        "SPF ENFORCEMENT CHECK  (separate mode — -t required)\n"
+        "  Tests whether the Edge/gateway server enforces SPF on inbound connections.\n"
+        "  Connects from your IP, claims MAIL FROM of the target domain,\n"
+        "  and checks if the server rejects it (enforced) or accepts it (not enforced)."
+    )
+    spf.add_argument("--spf-check",           action="store_true",
+                     help="Test if the server enforces SPF on inbound unauthenticated connections")
+    spf.add_argument("--spf-domain",          default=None, metavar="DOMAIN",
+                     help="Domain to spoof in MAIL FROM for the SPF test.\n"
+                          "If omitted, extracted from banner or asked.")
+    spf.add_argument("--spf-from",            default=None, metavar="ADDRESS",
+                     help="Exact MAIL FROM address to use in SPF test.\n"
+                          "Overrides --spf-domain for the internal spoof test.\n"
+                          "e.g. --spf-from ceo@isf.gov.lb")
+    spf.add_argument("--spf-rcpt",            default=None, metavar="ADDRESS",
+                     help="RCPT TO address for SPF test (default: garbage@spf-domain).")
 
     # ── AUTH BRUTE FORCE ──────────────────────────────────────────────────────
     bf = parser.add_argument_group(
@@ -1577,6 +1597,181 @@ def check_open_relay(target, port, ehlo_domain, timeout, verbose,
     return results
 
 
+
+# ── SPF enforcement check ──────────────────────────────────────────────────────
+
+def check_spf_enforcement(target, port, ehlo_domain, timeout, verbose,
+                           use_starttls, no_starttls, spoof_domain,
+                           spf_from=None, spf_rcpt=None):
+    """
+    Test whether the server enforces SPF on inbound unauthenticated connections.
+
+    Method: connect from the current machine's IP, claim MAIL FROM of a domain
+    the server owns, and observe the response.
+
+      250 on MAIL FROM or RCPT TO  = SPF not enforced (finding)
+      550 5.7.1 / 5.7.23 / 530    = SPF enforced (correct)
+      451 / 421                    = greylisted / rate limited (inconclusive)
+
+    Also tests a second vector: spoofed MAIL FROM of an unrelated external domain
+    (e.g. gmail.com) to see if the server does basic sender validation at all.
+
+    Returns list of result dicts.
+    """
+    rand = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+
+    # Resolve MAIL FROM and RCPT TO:
+    #   both provided    → use as-is
+    #   from only        → use it, derive rcpt domain from it
+    #   rcpt only        → generate from using spoof_domain, use rcpt as-is
+    #   neither          → generate both from spoof_domain
+    if spf_from and spf_rcpt:
+        internal_from = spf_from
+        rcpt_addr     = spf_rcpt
+    elif spf_from and not spf_rcpt:
+        internal_from = spf_from
+        # Derive RCPT domain from the provided FROM address
+        _from_domain  = spf_from.split("@")[-1] if "@" in spf_from else spoof_domain
+        rcpt_addr     = f"zz_probe_{rand}@{_from_domain}"
+    elif spf_rcpt and not spf_from:
+        internal_from = f"spfcheck_{rand}@{spoof_domain}"
+        rcpt_addr     = spf_rcpt
+    else:
+        internal_from = f"spfcheck_{rand}@{spoof_domain}"
+        rcpt_addr     = f"zz_probe_{rand}@{spoof_domain}"
+
+    results = []
+
+    tests = [
+        (
+            f"Spoof internal domain  (MAIL FROM {internal_from})",
+            internal_from,
+            rcpt_addr,
+        ),
+        (
+            "Spoof external domain  (MAIL FROM @gmail.com)",
+            f"spfcheck_{rand}@gmail.com",
+            rcpt_addr,
+        ),
+        (
+            "Null sender            (MAIL FROM <>)",
+            "",
+            rcpt_addr,
+        ),
+    ]
+
+    print(f"\n[*] -- SPF enforcement check --------------------------------")
+    print(info(f"Target     : {target}:{port}"))
+    if spf_from:
+        print(info(f"MAIL FROM  : {CYAN}{spf_from}{RESET} (--spf-from)"))
+    else:
+        print(info(f"Spoofing   : {spoof_domain}"))
+    print(info(f"RCPT probe : {rcpt_addr}"))
+    print()
+
+    s, _ = connect_and_init(target, port, ehlo_domain, timeout, verbose,
+                             use_starttls, no_starttls, None, None,
+                             use_ssl=False)
+    if not s:
+        print(err("Could not connect for SPF check — skipping."))
+        return results
+
+    not_enforced_count = 0
+
+    for label, mf, rcpt in tests:
+        mf_addr = f"<{mf}>" if mf else "<>"
+        try:
+            reset_mail_state(s, verbose)
+            mail_res = send_cmd(s, f"MAIL FROM: {mf_addr}\r\n", verbose)
+            mail_code = mail_res.strip()[:3]
+
+            if mail_code == "250":
+                # Server accepted the spoofed MAIL FROM — try RCPT
+                rcpt_res  = send_cmd(s, f"RCPT TO: <{rcpt}>\r\n", verbose)
+                reset_mail_state(s, verbose)
+                rcpt_code = rcpt_res.strip()[:3]
+
+                if rcpt_code in ("250", "251", "252"):
+                    result   = "NOT ENFORCED"
+                    response = rcpt_res.strip()[:70]
+                    not_enforced_count += 1
+                elif rcpt_code in ("550", "551", "553", "554"):
+                    # Rejected at RCPT — user doesn't exist, but MAIL FROM passed
+                    # This still means SPF is not enforced (MAIL FROM was accepted)
+                    result   = "NOT ENFORCED"
+                    response = f"MAIL FROM accepted, RCPT rejected: {rcpt_res.strip()[:50]}"
+                    not_enforced_count += 1
+                elif rcpt_code in ("530", "534", "535"):
+                    result   = "ENFORCED"
+                    response = rcpt_res.strip()[:70]
+                elif rcpt_code in ("421", "450", "451"):
+                    result   = "inconclusive"
+                    response = rcpt_res.strip()[:70]
+                else:
+                    result   = "inconclusive"
+                    response = rcpt_res.strip()[:70]
+
+            elif mail_code in ("550", "553", "554"):
+                result   = "ENFORCED"
+                response = mail_res.strip()[:70]
+            elif mail_code in ("530", "534", "535"):
+                result   = "ENFORCED"
+                response = mail_res.strip()[:70]
+            elif mail_code in ("421", "450", "451"):
+                result   = "inconclusive"
+                response = mail_res.strip()[:70]
+                # Reconnect after rate limit
+                try: s.close()
+                except: pass
+                time.sleep(2)
+                s, _ = connect_and_init(target, port, ehlo_domain, timeout, verbose,
+                                         use_starttls, no_starttls, None, None,
+                                         use_ssl=False)
+                if not s:
+                    print(err("Lost connection during SPF check."))
+                    break
+            else:
+                result   = "inconclusive"
+                response = mail_res.strip()[:70]
+
+            results.append(dict(test=label, mail_from=mf_addr,
+                                rcpt_to=rcpt, response=response, result=result))
+
+        except Exception as e:
+            results.append(dict(test=label, mail_from=mf_addr,
+                                rcpt_to=rcpt, response=str(e)[:70], result="error"))
+            try: s.close()
+            except: pass
+            s, _ = connect_and_init(target, port, ehlo_domain, timeout, verbose,
+                                     use_starttls, no_starttls, None, None,
+                                     use_ssl=False)
+            if not s:
+                break
+
+    if s:
+        try: s.send(b"QUIT\r\n"); s.close()
+        except: pass
+
+    # ── Print results table ──────────────────────────────────────────────────
+    COL = 46
+    print(f"[*] -- SPF check results ------------------------------------")
+    for r in results:
+        if   r["result"] == "NOT ENFORCED":  badge = f"{RED}{BOLD}[NOT ENFORCED]{RESET}"
+        elif r["result"] == "ENFORCED":      badge = f"{GREEN}[enforced]    {RESET}"
+        elif r["result"] == "inconclusive":  badge = f"{YELLOW}[inconclusive]{RESET}"
+        else:                                badge = f"{YELLOW}[error]       {RESET}"
+        print(f"  {badge}  {r['test'].ljust(COL)}  {GRAY}{r['response']}{RESET}")
+
+    print()
+    if not_enforced_count > 0:
+        print(err(f"SPF NOT ENFORCED — {not_enforced_count} spoofed sender(s) accepted!"))
+        print(warn("Server accepts mail from unauthenticated IPs claiming to be internal senders."))
+        print(warn("Fix: Enable Sender ID Agent on Edge Receive Connector and set action to Reject."))
+    else:
+        print(ok("SPF appears enforced — spoofed senders were rejected."))
+    print("[*] ---------------------------------------------------------")
+    return results
+
 # ── Shared probe helper ────────────────────────────────────────────────────────
 
 def probe_target(target, port, timeout, probe_ehlo="probe.local"):
@@ -2344,6 +2539,67 @@ def main():
                     rf.write(f"           TO  : {r['rcpt_to']}\n")
                     rf.write(f"           RESP: {r['response']}\n\n")
             print(ok(f"Results saved to: {relay_file}"))
+        return
+
+    # ── Mode 1b: SPF ENFORCEMENT CHECK ───────────────────────────────────────
+    if args.spf_check:
+        if args.resume:
+            print(err("--spf-check and --resume cannot be combined.")); sys.exit(1)
+        if brute_mode:
+            print(err("--spf-check and --brute-user/--brute-pass cannot be combined.")); sys.exit(1)
+        if any([args.user, args.wordlist, args.name]):
+            print(err("--spf-check cannot be combined with -u/-w/--name."))
+            print(info("Run them separately.")); sys.exit(1)
+        if not args.target:
+            print(err("--spf-check requires -t/--target")); sys.exit(1)
+
+        # Use relay session setup — same probe/EHLO/STARTTLS flow
+        spf_sess    = session_setup_relay(args, cli)
+        ehlo_domain = spf_sess["ehlo_domain"]
+
+        # Resolve domain to spoof
+        if args.spf_domain:
+            spoof_domain = args.spf_domain
+            print(info(f"Spoof domain : {CYAN}{spoof_domain}{RESET} (from --spf-domain)"))
+        else:
+            # Default to the domain extracted from the banner
+            banner_fqdn  = spf_sess.get("target_domain") or ehlo_domain
+            # Strip leading hostname label if FQDN (mail.example.com -> example.com)
+            parts = banner_fqdn.rstrip(".").split(".")
+            spoof_domain = ".".join(parts[1:]) if len(parts) > 2 else banner_fqdn
+            print(info(f"Spoof domain : {CYAN}{spoof_domain}{RESET} (derived from banner)"))
+
+        print(f"\n{BLUE}[*] ── SPF check — pre-run summary ─────────────────{RESET}")
+        print(f"[*] Target   : {CYAN}{args.target}:{args.port}{RESET}")
+        print(f"[*] EHLO     : {CYAN}{ehlo_domain}{RESET}")
+        if args.spf_from:
+            print(f"[*] MAIL FROM: {CYAN}{args.spf_from}{RESET} (--spf-from)")
+        else:
+            print(f"[*] Spoofing : {CYAN}{spoof_domain}{RESET}")
+        print(f"[*] Tests    : 3 (internal domain, external domain, null sender)")
+        print(f"{BLUE}[*] ────────────────────────────────────────────────{RESET}")
+        print()
+
+        spf_results = check_spf_enforcement(
+            args.target, args.port, ehlo_domain, args.timeout, args.verbose,
+            args.starttls, args.no_starttls,
+            spoof_domain=spoof_domain,
+            spf_from=args.spf_from,
+            spf_rcpt=args.spf_rcpt,
+        )
+
+        if spf_results:
+            spf_file = f"spf_{args.target}_{args.port}.txt"
+            with open(spf_file, "w") as sf:
+                sf.write(f"SPF Enforcement Check -- {args.target}:{args.port}\n")
+                sf.write("=" * 60 + "\n")
+                sf.write(f"Spoofed domain : {spoof_domain}\n\n")
+                for r in spf_results:
+                    sf.write(f"[{r['result'].upper():14}] {r['test']}\n")
+                    sf.write(f"               FROM: {r['mail_from']}\n")
+                    sf.write(f"               TO  : {r['rcpt_to']}\n")
+                    sf.write(f"               RESP: {r['response']}\n\n")
+            print(ok(f"Results saved to: {spf_file}"))
         return
 
     # ── Mode 2: AUTH BRUTE FORCE ──────────────────────────────────────────────
