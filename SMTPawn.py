@@ -1284,6 +1284,59 @@ def parse_auth_mechanisms(ehlo_caps):
     return []
 
 
+def probe_auth_required(target, port, ehlo_domain, timeout, verbose,
+                        use_starttls, no_starttls, rcpt_domain):
+    """
+    Probe whether the server silently requires authentication even though
+    it did not advertise AUTH in EHLO. Common on Exchange and hardened MTAs.
+
+    Sends MAIL FROM + RCPT TO with a garbage address on a fresh connection
+    and reads the response code:
+      530 / 534 / 535  = authentication required (silent gate)
+      550 / 551 / 553  = server is accepting commands normally (no auth needed)
+      250 / 252        = server accepted the address (open or catch-all)
+      421 / 450 / 451  = rate limited / temporary — treat as unknown
+
+    Returns: "required" | "not_needed" | "unknown"
+    """
+    rand       = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    probe_from = f"noreply@{rcpt_domain}" if rcpt_domain else f"noreply@{ehlo_domain}"
+    probe_rcpt = f"zz_probe_{rand}@{rcpt_domain}" if rcpt_domain else f"zz_probe_{rand}"
+
+    try:
+        s, _ = connect_and_init(target, port, ehlo_domain, timeout, False,
+                                use_starttls, no_starttls, None, None)
+        if not s:
+            return "unknown"
+
+        # Some servers gate at MAIL FROM level
+        mail_res = send_cmd(s, f"MAIL FROM: <{probe_from}>\r\n", False)
+        if mail_res.strip()[:3] in ("530", "534", "535"):
+            try: s.close()
+            except: pass
+            return "required"
+
+        if not mail_res.startswith("250"):
+            try: s.close()
+            except: pass
+            return "unknown"
+
+        # Most gate at RCPT TO level
+        rcpt_res = send_cmd(s, f"RCPT TO: <{probe_rcpt}>\r\n", False)
+        try: send_cmd(s, "RSET\r\n", False); s.close()
+        except: pass
+
+        code = rcpt_res.strip()[:3]
+        if   code in ("530", "534", "535"):              return "required"
+        elif code in ("550", "551", "553", "554",
+                      "250", "251", "252"):               return "not_needed"
+        elif code in ("421", "450", "451", "452"):        return "unknown"
+        else:                                             return "unknown"
+
+    except Exception:
+        return "unknown"
+
+
 def test_auth_credentials(target, port, domain, timeout, verbose,
                            use_starttls, no_starttls, user, password,
                            mechanisms=None):
@@ -2033,7 +2086,48 @@ def session_setup_fresh(args, cli):
                     print(info("Re-run with --auth-user and --auth-pass to authenticate."))
                     sys.exit(0)
     else:
-        print(info(f"AUTH         : {GRAY}not advertised{RESET}"))
+        print(info(f"AUTH         : {GRAY}not advertised in EHLO{RESET}"))
+        # Even when not advertised, some servers silently require auth.
+        # Send a quick probe to find out before preflight wastes time.
+        print(info("Probing for silent AUTH requirement …"))
+        _rcpt_probe = rcpt_domain_preset if rcpt_domain_preset else None
+        auth_probe  = probe_auth_required(
+            args.target, args.port, domain, args.timeout, args.verbose,
+            args.starttls, args.no_starttls, _rcpt_probe
+        )
+        if auth_probe == "required":
+            print(warn("Server requires authentication even though it was not advertised."))
+            if args.auth_user and args.auth_pass:
+                print(info(f"Testing provided credentials for {args.auth_user} …"))
+                auth_ok, auth_detail = test_auth_credentials(
+                    args.target, args.port, domain, args.timeout, args.verbose,
+                    args.starttls, args.no_starttls,
+                    args.auth_user, args.auth_pass,
+                    mechanisms=None  # try LOGIN + PLAIN since none advertised
+                )
+                if auth_ok:
+                    print(ok(f"AUTH success — {args.auth_user} authenticated via {auth_detail}"))
+                else:
+                    print(err(f"AUTH failed — {auth_detail}"))
+                    if not args.force:
+                        c = safe_input(ask("Credentials failed. Continue anyway? [y/n] (default: n): ")).strip().lower()
+                        if c not in ("y", "yes"):
+                            print(err("Aborting — fix credentials or use --force to skip."))
+                            sys.exit(1)
+                    else:
+                        print(warn("--force set — continuing despite AUTH failure"))
+            else:
+                print(warn("No credentials provided (--auth-user / --auth-pass)."))
+                print(warn("Enumeration will likely fail — every RCPT will return 530/535."))
+                if not args.force:
+                    c = safe_input(ask("Continue without credentials? [y/n] (default: n): ")).strip().lower()
+                    if c not in ("y", "yes"):
+                        print(info("Re-run with --auth-user and --auth-pass to authenticate."))
+                        sys.exit(0)
+        elif auth_probe == "not_needed":
+            print(info(f"AUTH         : {GREEN}not required{RESET} (probe confirmed)"))
+        else:
+            print(info(f"AUTH         : {GRAY}unknown — could not confirm{RESET} (probe inconclusive)"))
 
     # ── Preflight MAIL FROM — uses confirmed target domain ────────────────────
     _ptd = rcpt_domain_preset if rcpt_domain_preset else domain
