@@ -192,14 +192,13 @@ def get_args():
             "SMTPwn — SMTP User Enumerator, Relay Tester & Auth Brute-Forcer\n"
             "\n"
             "MODES (mutually exclusive):\n"
-            "  Enumeration  : -t <target> + user source (-u/-w/--name)\n"
+            "  Enumeration  : -t <target> + user source (-u / -w / --name)\n"
             "  Resume       : --resume\n"
             "  Relay test   : -t <target> --open-relay\n"
             "  Auth brute   : -t <target> --brute-user <u> --brute-pass <p>\n"
         ),
         formatter_class=argparse.RawTextHelpFormatter
     )
-
     # ── TARGET ───────────────────────────────────────────────────────────────
     tgt = parser.add_argument_group("TARGET")
     tgt.add_argument("-t", "--target",   required=False, metavar="IP/HOST",
@@ -213,19 +212,19 @@ def get_args():
                      help="Test a single username")
     usr.add_argument("-w", "--wordlist", metavar="FILE",
                      help="Path to username wordlist (one per line)")
-    usr.add_argument("--name",           metavar="'FULL NAME'",
-                     help="Generate username variations from a full name (e.g. 'John Doe')")
+    usr.add_argument("--name",           metavar="FULL NAME",
+                     help="Generate username variations from a full name (e.g. John Doe)")
 
     # ── ENUMERATION — method ──────────────────────────────────────────────────
     mth = parser.add_argument_group("ENUMERATION — method")
     mth.add_argument("-m", "--method",  default="RCPT", metavar="METHOD",
                      help=(
                          "Enumeration method(s), single or comma-separated (default: RCPT):\n"
-                         "  VRFY            — SMTP VRFY command\n"
-                         "  RCPT            — MAIL FROM + RCPT TO\n"
-                         "  EXPN            — SMTP EXPN (expands mailing lists)\n"
-                         "  VRFY,RCPT       — must pass both\n"
-                         "  VRFY,RCPT,EXPN  — must pass all three"
+                         "  VRFY            - SMTP VRFY command\n"
+                         "  RCPT            - MAIL FROM + RCPT TO\n"
+                         "  EXPN            - SMTP EXPN (expands mailing lists)\n"
+                         "  VRFY,RCPT       - must pass both\n"
+                         "  VRFY,RCPT,EXPN  - must pass all three"
                      ))
     mth.add_argument("--mail-from",     default=None, metavar="ADDRESS",
                      help="Custom MAIL FROM address (default: auto from target domain)")
@@ -233,13 +232,13 @@ def get_args():
     # ── ENUMERATION — domain & EHLO ───────────────────────────────────────────
     dom = parser.add_argument_group("ENUMERATION — domain & EHLO")
     dom.add_argument("-d", "--domain-target", dest="domain_target", default=None, metavar="DOMAIN",
-                     help="Target domain for RCPT TO / MAIL FROM (e.g. target.example.com).\n"
+                     help="Target domain for RCPT TO / MAIL FROM.\n"
                           "If omitted, extracted from banner or asked interactively.")
     dom.add_argument("--ehlo",                default=None, metavar="DOMAIN",
                      help="Domain for EHLO handshake only (not used in RCPT/MAIL FROM).\n"
                           "If omitted, extracted from banner or asked interactively.")
     dom.add_argument("--rcpt-domain",         default=None, metavar="DOMAIN",
-                     help="Override RCPT TO domain specifically (use 'none' for plain username).")
+                     help="Override RCPT TO domain specifically (none = plain username).")
 
     # ── OUTPUT ────────────────────────────────────────────────────────────────
     out = parser.add_argument_group("OUTPUT")
@@ -253,7 +252,7 @@ def get_args():
     # ── CONNECTION ────────────────────────────────────────────────────────────
     con = parser.add_argument_group("CONNECTION")
     con.add_argument("-v",  "--verbose",      action="store_true",
-                     help="Show raw SMTP traffic ([>] sent / [<] received)")
+                     help="Show raw SMTP traffic  ([>] sent / [<] received)")
     con.add_argument("--timeout",             type=float, default=15.0, metavar="SEC",
                      help="Socket timeout in seconds (default: 15.0)")
     con.add_argument("--starttls",            action="store_true",
@@ -270,12 +269,12 @@ def get_args():
     tun.add_argument("-T", "--timing",        type=int, choices=range(6), default=DEFAULT_TIMING, metavar="[0-5]",
                      help=(
                          "Timing template, like nmap (default: T3):\n"
-                         "  T0 Paranoid   — 5s delay,   batch 1   (IDS evasion)\n"
-                         "  T1 Sneaky     — 2s delay,   batch 2   (slow, stealthy)\n"
-                         "  T2 Polite     — 1s delay,   batch 5   (reduced load)\n"
-                         "  T3 Normal     — 0.3s delay, batch 10  (default)\n"
-                         "  T4 Aggressive — 0.1s delay, batch 20  (fast)\n"
-                         "  T5 Insane     — no delay,   batch 50  (very fast, noisy)"
+                         "  T0 Paranoid   - 5s delay,   batch 1   (IDS evasion)\n"
+                         "  T1 Sneaky     - 2s delay,   batch 2   (slow, stealthy)\n"
+                         "  T2 Polite     - 1s delay,   batch 5   (reduced load)\n"
+                         "  T3 Normal     - 0.3s delay, batch 10  (default)\n"
+                         "  T4 Aggressive - 0.1s delay, batch 20  (fast)\n"
+                         "  T5 Insane     - no delay,   batch 50  (very fast, noisy)"
                      ))
     tun.add_argument("-b", "--batch",         type=int, default=10, metavar="N",
                      help="Usernames per TCP connection per thread (default: 10)")
@@ -293,28 +292,30 @@ def get_args():
     pf.add_argument("--no-preflight",         action="store_true",
                     help="Skip pre-flight check entirely")
     pf.add_argument("--preflight-mode",       choices=["selected","all"], default="all",
-                    help="Pre-flight scope: 'all' methods or 'selected' only (default: all)")
+                    help="Pre-flight scope: all methods or selected only (default: all)")
     pf.add_argument("--no-method-switch",     action="store_true",
                     help="Never suggest switching methods after pre-flight")
     pf.add_argument("--force",                action="store_true",
                     help="Skip interactive confirmations (EHLO fail, unreliable method, etc.)")
 
     # ── OPEN RELAY TEST ───────────────────────────────────────────────────────
-    rel = parser.add_argument_group("OPEN RELAY TEST  (separate mode — use with -t, no wordlist needed)")
+    rel = parser.add_argument_group("OPEN RELAY TEST  (separate mode — -t required, no wordlist needed)")
     rel.add_argument("--open-relay",          action="store_true",
                      help="Test if the server is an open relay")
     rel.add_argument("--relay-domain",        default=None, metavar="DOMAIN",
-                     help="Target domain for source-routing probes (e.g. target.example.com).\n"
+                     help="Target domain for source-routing probes.\n"
                           "If omitted, extracted from banner or asked.")
     rel.add_argument("--relay-from",          default=None, metavar="ADDRESS",
-                     help="MAIL FROM address for relay tests (default: realistic auto-generated)")
+                     help="MAIL FROM for relay tests (default: realistic auto-generated)")
     rel.add_argument("--relay-to",            default=None, metavar="ADDRESS",
-                     help="RCPT TO address for relay tests (default: realistic auto-generated)")
+                     help="RCPT TO for relay tests (default: realistic auto-generated)")
 
-    # ── AUTH BRUTE FORCE ─────────────────────────────────────────────────────
-    bf = parser.add_argument_group("AUTH BRUTE FORCE  (separate mode — use with -t, no wordlist needed)\n"
-                                   "  --brute-user / --brute-pass accept a single value OR a file path\n"
-                                   "  (auto-detected: existing file = wordlist, otherwise = literal)")
+    # ── AUTH BRUTE FORCE ──────────────────────────────────────────────────────
+    bf = parser.add_argument_group(
+        "AUTH BRUTE FORCE  (separate mode — -t required, no wordlist needed)\n"
+        "  --brute-user / --brute-pass auto-detect file vs literal:\n"
+        "  existing file path = loaded as wordlist, otherwise = literal string."
+    )
     bf.add_argument("--brute-user",           default=None, metavar="USER/FILE",
                     help="Single username or path to username wordlist")
     bf.add_argument("--brute-pass",           default=None, metavar="PASS/FILE",
@@ -325,9 +326,12 @@ def get_args():
     bf.add_argument("--brute-delay",          type=float, default=1.0, metavar="SEC",
                     help="Delay between AUTH attempts in seconds (default: 1.0)")
     bf.add_argument("--brute-stop",           action="store_true",
-                    help="Stop on first successful credential (default: try all combinations)")
+                    help="Stop on first successful credential (default: try all)")
     bf.add_argument("--brute-max",            type=int, default=0, metavar="N",
-                    help="Maximum attempts before stopping — 0 = unlimited (default: 0)")
+                    help="Max attempts before stopping — 0 = unlimited (default: 0)")
+    bf.add_argument("--brute-threads",        type=int, default=1, metavar="N",
+                    help="Parallel threads — each thread owns distinct usernames,\n"
+                         "never two threads on the same account (avoids lockouts).")
 
     return parser.parse_args()
 
@@ -403,7 +407,8 @@ def generate_username_variations(full_name):
 def send_cmd(s, cmd, verbose=False):
     if verbose:
         with print_lock:
-          print(f"  {CYAN}[>]{RESET} {cmd.strip()}")
+            print("\r" + " " * 120, end="\r")  # clear progress bar before traffic line
+            print(f"  {CYAN}[>]{RESET} {cmd.strip()}")
 
     s.send(cmd.encode())
 
@@ -429,6 +434,7 @@ def send_cmd(s, cmd, verbose=False):
 
     if verbose:
         with print_lock:
+            print("\r" + " " * 120, end="\r")  # clear progress bar before traffic line
             print(f"  {GRAY}[<]{RESET} {res.strip()}")
 
     return res
@@ -473,7 +479,9 @@ def connect_and_init(target, port, domain, timeout, verbose, use_starttls=False,
         raw.connect((target, port))
         banner = raw.recv(4096).decode(errors="replace")
         if verbose:
-            print(f"  {GRAY}[<]{RESET} {banner.strip()}")
+            with print_lock:
+                print("\r" + " " * 120, end="\r")
+                print(f"  {GRAY}[<]{RESET} {banner.strip()}")
 
         s = raw  # may be replaced with TLS socket below
 
@@ -1234,7 +1242,546 @@ def is_fatal_connection_error(exc):
         "network is unreachable",
         "timed out"
     ])
-# ── Main ───────────────────────────────────────────────────────────────────────
+
+
+# ── Credential loader ─────────────────────────────────────────────────────────
+
+def load_credential(value):
+    """
+    Auto-detect: if value is a path to an existing file, load all non-blank
+    lines as a list. Otherwise return it as a single-element list.
+    Used by --brute-user and --brute-pass.
+    """
+    if value and os.path.isfile(value):
+        try:
+            with open(value, "r", errors="ignore") as fh:
+                items = [line.strip() for line in fh if line.strip()]
+            if not items:
+                print(err(f"File '{value}' is empty"))
+                sys.exit(1)
+            return items
+        except Exception as e:
+            print(err(f"Could not read '{value}': {e}"))
+            sys.exit(1)
+    return [value] if value else []
+
+
+# ── Auth helpers ───────────────────────────────────────────────────────────────
+
+def parse_auth_mechanisms(ehlo_caps):
+    """
+    Extract AUTH mechanisms from EHLO response.
+    e.g. '250-AUTH LOGIN PLAIN CRAM-MD5' -> ['LOGIN', 'PLAIN', 'CRAM-MD5']
+    """
+    for line in ehlo_caps.splitlines():
+        if "AUTH" in line.upper():
+            parts = line.upper().split()
+            try:
+                idx = parts.index("AUTH")
+                return parts[idx + 1:]
+            except (ValueError, IndexError):
+                pass
+    return []
+
+
+def test_auth_credentials(target, port, domain, timeout, verbose,
+                           use_starttls, no_starttls, user, password,
+                           mechanisms=None):
+    """
+    Try a single user/password pair — fresh connection per attempt to avoid
+    session poisoning after a failed AUTH.
+    Returns (True, mechanism_used) on success, (False, reason) on failure.
+    Verbose ON: full [>]/[<] traffic shown via send_cmd.
+    """
+    import base64, hmac, hashlib
+
+    s, _ = connect_and_init(target, port, domain, timeout, verbose,
+                             use_starttls, no_starttls, None, None)
+    if not s:
+        return False, "connection failed"
+
+    mechs_to_try = mechanisms or ["LOGIN", "PLAIN"]
+
+    try:
+        for mech in mechs_to_try:
+            mech = mech.upper()
+            try:
+                if mech == "LOGIN":
+                    res = send_cmd(s, "AUTH LOGIN\r\n", verbose)
+                    if not res.startswith("334"):
+                        continue
+                    send_cmd(s, base64.b64encode(user.encode()).decode() + "\r\n", verbose)
+                    auth_res = send_cmd(s, base64.b64encode(password.encode()).decode() + "\r\n", verbose)
+
+                elif mech == "PLAIN":
+                    plain = base64.b64encode(f"\x00{user}\x00{password}".encode()).decode()
+                    auth_res = send_cmd(s, f"AUTH PLAIN {plain}\r\n", verbose)
+
+                elif mech == "CRAM-MD5":
+                    res = send_cmd(s, "AUTH CRAM-MD5\r\n", verbose)
+                    if not res.startswith("334"):
+                        continue
+                    # Safe decode: take first line, strip "334 " prefix
+                    challenge_b64 = res.splitlines()[0].split(None, 1)[-1].strip()
+                    try:
+                        challenge = base64.b64decode(challenge_b64)
+                    except Exception:
+                        continue
+                    digest = hmac.new(password.encode(), challenge, hashlib.md5).hexdigest()
+                    response = base64.b64encode(f"{user} {digest}".encode()).decode()
+                    auth_res = send_cmd(s, response + "\r\n", verbose)
+
+                else:
+                    continue
+
+                if auth_res.startswith("235"):
+                    return True, mech
+
+                # 500/503 = command unrecognised — reconnect for next mech
+                if auth_res.startswith(("500", "503")):
+                    try: s.close()
+                    except: pass
+                    s, _ = connect_and_init(target, port, domain, timeout, verbose,
+                                             use_starttls, no_starttls, None, None)
+                    if not s:
+                        return False, "lost connection"
+
+            except Exception as e:
+                if verbose:
+                    print(detail(f"AUTH {mech} error: {e}"))
+                continue
+
+    finally:
+        try: s.close()
+        except: pass
+
+    return False, f"rejected ({', '.join(mechs_to_try)})"
+
+
+# ── Open relay ────────────────────────────────────────────────────────────────
+
+def _relay_name():
+    """Generate a realistic-looking email local-part."""
+    first = random.choice([
+        "james","john","robert","michael","william","david","richard",
+        "thomas","charles","daniel","sarah","emily","jessica","ashley",
+        "amanda","melissa","stephanie","nicole","elizabeth","jennifer"
+    ])
+    last = random.choice([
+        "smith","johnson","williams","brown","jones","garcia","miller",
+        "davis","wilson","taylor","anderson","thomas","jackson","white",
+        "harris","martin","thompson","robinson","clark","rodriguez"
+    ])
+    sep = random.choice([".", "_", ""])
+    num = random.choice(["", str(random.randint(1, 99))])
+    return f"{first}{sep}{last}{num}"
+
+_FREEMAIL = ["gmail.com","outlook.com","yahoo.com","hotmail.com",
+             "protonmail.com","icloud.com","live.com","aol.com"]
+
+
+def check_open_relay(target, port, ehlo_domain, timeout, verbose,
+                     use_starttls, no_starttls, auth_user, auth_pass,
+                     relay_from=None, relay_to=None, target_domain=None):
+    """
+    Six-probe open relay test covering classic relay, null sender, and
+    source-routing bypass techniques.
+    Verbose ON:  full [>]/[<] SMTP traffic per test via send_cmd.
+    Verbose OFF: result table only.
+    Returns list of result dicts.
+    """
+    local  = _relay_name()
+    d1, d2 = random.sample(_FREEMAIL, 2)
+    ext_from = relay_from or f"{local}@{d1}"
+    ext_to   = relay_to   or f"{local}@{d2}"
+    int_from = f"{local}@{target_domain}" if target_domain else ext_from
+    td       = target_domain or ehlo_domain
+    ext_user, ext_host = ext_to.split("@", 1)
+
+    tests = [
+        ("External -> External",            ext_from, ext_to,                         False),
+        ("Internal -> External",             int_from, ext_to,                         False),
+        ("Null sender -> External",          "",       ext_to,                         False),
+        ("Source route  user%host@target",   ext_from, f"{ext_user}%{ext_host}@{td}", True),
+        ("Source route  user@host@target",   ext_from, f"{ext_to}@{td}",              True),
+        ("Source route  @target:user@host",  ext_from, f"@{td}:{ext_to}",             True),
+    ]
+
+    if not target_domain:
+        tests = [(l, mf, rt, r) for l, mf, rt, r in tests if not r]
+        print(warn("No relay domain — source-routing bypass tests skipped"))
+
+    print(f"\n[*] -- Open relay test --------------------------------------")
+    print(info(f"FROM : {ext_from}"))
+    print(info(f"TO   : {ext_to}"))
+    print(info(f"DOM  : {td}"))
+    print()
+
+    results    = []
+    open_count = 0
+
+    s, _ = connect_and_init(target, port, ehlo_domain, timeout, verbose,
+                             use_starttls, no_starttls, auth_user, auth_pass)
+    if not s:
+        print(err("Could not connect for relay test — skipping."))
+        return results
+
+    for label, mf, rt, _ in tests:
+        mf_addr = f"<{mf}>" if mf else "<>"
+        try:
+            reset_mail_state(s, verbose)
+            mail_res = send_cmd(s, f"MAIL FROM: {mf_addr}\r\n", verbose)
+            if not mail_res.startswith("250"):
+                result, response = "skipped", mail_res.strip()[:70]
+            else:
+                rcpt_res = send_cmd(s, f"RCPT TO: <{rt}>\r\n", verbose)
+                reset_mail_state(s, verbose)
+                code     = rcpt_res.strip()[:3]
+                response = rcpt_res.strip()[:70]
+                if   code == "250":           result = "OPEN";      open_count += 1
+                elif code in ("251", "252"):  result = "POTENTIAL"; open_count += 1
+                else:                         result = "closed"
+            results.append(dict(test=label, mail_from=mf_addr,
+                                rcpt_to=rt, response=response, result=result))
+        except Exception as e:
+            results.append(dict(test=label, mail_from=mf_addr,
+                                rcpt_to=rt, response=str(e)[:70], result="error"))
+            try: s.close()
+            except: pass
+            s, _ = connect_and_init(target, port, ehlo_domain, timeout, verbose,
+                                     use_starttls, no_starttls, auth_user, auth_pass)
+            if not s:
+                print(err("Lost connection — stopping relay test early."))
+                break
+
+    if s:
+        try: s.send(b"QUIT\r\n"); s.close()
+        except: pass
+
+    COL = 38
+    print(f"[*] -- Relay results -----------------------------------------")
+    for r in results:
+        if   r["result"] == "OPEN":      badge = f"{RED}{BOLD}[OPEN RELAY]{RESET}"
+        elif r["result"] == "POTENTIAL": badge = f"{YELLOW}[POTENTIAL] {RESET}"
+        elif r["result"] == "closed":    badge = f"{GRAY}[closed]    {RESET}"
+        elif r["result"] == "skipped":   badge = f"{GRAY}[skipped]   {RESET}"
+        else:                            badge = f"{YELLOW}[error]     {RESET}"
+        print(f"  {badge}  {r['test'].ljust(COL)}  {GRAY}{r['response']}{RESET}")
+
+    print()
+    if open_count > 0:
+        print(err(f"OPEN RELAY CONFIRMED -- {open_count} test(s) accepted relay!"))
+        print(warn("This server can forward mail for unauthorised senders. Report it."))
+    else:
+        print(ok("No open relay detected — all probe attempts rejected."))
+    print("[*] ---------------------------------------------------------")
+    return results
+
+
+# ── Shared probe helper ────────────────────────────────────────────────────────
+
+def probe_target(target, port, timeout, probe_ehlo="probe.local"):
+    """
+    Single connection to grab banner + EHLO capabilities.
+    Used by session_setup_fresh, session_setup_relay, session_setup_brute,
+    and the post-STARTTLS re-probe. Exits on fatal connection error.
+    """
+    fp_banner = ""
+    ehlo_caps = ""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((target, port))
+        try:
+            fp_banner = s.recv(4096).decode(errors="replace")
+        except socket.timeout:
+            fp_banner = ""
+        ehlo_res = send_cmd(s, f"EHLO {probe_ehlo}\r\n", False)
+        if not ehlo_res.startswith("250"):
+            ehlo_res = send_cmd(s, f"HELO {probe_ehlo}\r\n", False)
+        ehlo_caps = ehlo_res
+        s.send(b"QUIT\r\n")
+        s.close()
+    except Exception as e:
+        print(warn(f"Probe failed: {e}"))
+        if is_fatal_connection_error(e):
+            print(err("Target unreachable — aborting."))
+        sys.exit(1)
+    return fp_banner, ehlo_caps
+
+
+# ── Relay domain prompt ────────────────────────────────────────────────────────
+
+def ask_relay_domain(banner_fqdn, ehlo_domain):
+    """
+    Ask which domain to use for relay source-routing probes.
+    Option 3 = no domain -> skip source-routing tests, run only 3 basic tests.
+    Returns domain string or None.
+    """
+    print("\n" + info("Set RELAY TARGET domain — used in source-routing bypass probes"))
+    print(detail("Source-routing tests need the target domain"))
+
+    if banner_fqdn:
+        print(info(f"Banner gave  : {CYAN}{banner_fqdn}{RESET}"))
+        choice = safe_input(
+            f"[?] Domain to use?\n"
+            f"    [1] Use banner value: {banner_fqdn}\n"
+            f"    [2] Enter manually (take part of it or type your own)\n"
+            f"    [3] No domain — skip source-routing tests\n"
+            f"    Choice (default: 1): "
+        ).strip()
+        if choice == "3":
+            print(info("Source-routing tests will be skipped"))
+            return None
+        elif choice == "2":
+            raw = safe_input(f"[?] Enter domain (banner was '{banner_fqdn}'): ").strip().strip('"\'').strip()
+            return raw if raw else banner_fqdn
+        return banner_fqdn
+    else:
+        print(info("No hostname found in banner"))
+        choice = safe_input(
+            f"[?] Domain to use?\n"
+            f"    [1] Same as EHLO ({ehlo_domain})\n"
+            f"    [2] Enter manually\n"
+            f"    [3] No domain — skip source-routing tests\n"
+            f"    Choice (default: 1): "
+        ).strip()
+        if choice == "3":
+            print(info("Source-routing tests will be skipped"))
+            return None
+        elif choice == "2":
+            raw = safe_input("[?] Enter domain: ").strip().strip('"\'').strip()
+            return raw if raw else ehlo_domain
+        return ehlo_domain
+
+
+# ── Session setup: OPEN RELAY mode ────────────────────────────────────────────
+
+def session_setup_relay(args, cli):
+    """
+    Probe -> fingerprint -> EHLO -> relay domain -> STARTTLS.
+    No preflight, no methods, no user list, no checkpoint.
+    """
+    print("\n" + info("Probing target …"))
+    fp_banner, ehlo_caps = probe_target(args.target, args.port, args.timeout,
+                                         probe_ehlo=args.ehlo or "probe.local")
+    mta_profile = fingerprint_mta(fp_banner)
+    mta_name    = mta_profile["name"]
+    if has_banner(fp_banner):
+        print(info(f"MTA detected : {CYAN}{mta_name}{RESET}"))
+        print(info(f"Banner       : {fp_banner.strip()[:80]}"))
+    else:
+        print(info(f"MTA detected : {CYAN}{mta_name}{RESET}"))
+        print(warn("No informative banner — server may be hardened."))
+
+    ehlo_domain = resolve_ehlo_domain(
+        fp_banner, mta_profile, args.ehlo,
+        args.target, args.port, args.timeout,
+        args.verbose, ehlo_caps=ehlo_caps, force=args.force
+    )
+
+    if args.relay_domain:
+        target_domain = args.relay_domain
+        print(info(f"Relay domain : {CYAN}{target_domain}{RESET} (from --relay-domain)"))
+    else:
+        banner_fqdn   = extract_domain_from_banner(fp_banner)
+        target_domain = ask_relay_domain(banner_fqdn, ehlo_domain)
+        if target_domain:
+            print(info(f"Relay domain : {CYAN}{target_domain}{RESET}"))
+
+    starttls_adv = "STARTTLS" in ehlo_caps.upper() or "STARTTLS" in fp_banner.upper()
+    if starttls_adv:
+        print(info(f"STARTTLS     : {GREEN}advertised{RESET}"))
+        if "--starttls" not in cli and "--no-starttls" not in cli:
+            c = safe_input(ask("Server supports STARTTLS. Use it? [y/n] (default: y): ")).strip().lower()
+            if c in ("n", "no"):
+                args.no_starttls = True
+                print(info("STARTTLS skipped"))
+            else:
+                args.starttls = True
+                print(ok("STARTTLS enabled"))
+    else:
+        print(info(f"STARTTLS     : {GRAY}not advertised{RESET}"))
+        if args.starttls:
+            print(warn("--starttls forced but server did not advertise it"))
+
+    return dict(ehlo_domain=ehlo_domain, target_domain=target_domain)
+
+
+# ── Session setup: BRUTE FORCE mode ───────────────────────────────────────────
+
+def session_setup_brute(args, cli):
+    """
+    Probe -> fingerprint -> EHLO -> detect AUTH mechs -> STARTTLS.
+    No preflight, no enumeration, no checkpoint.
+    """
+    print("\n" + info("Probing target …"))
+    fp_banner, ehlo_caps = probe_target(args.target, args.port, args.timeout,
+                                         probe_ehlo=args.ehlo or "probe.local")
+    mta_profile = fingerprint_mta(fp_banner)
+    mta_name    = mta_profile["name"]
+    if has_banner(fp_banner):
+        print(info(f"MTA detected : {CYAN}{mta_name}{RESET}"))
+        print(info(f"Banner       : {fp_banner.strip()[:80]}"))
+    else:
+        print(info(f"MTA detected : {CYAN}{mta_name}{RESET}"))
+        print(warn("No informative banner — server may be hardened."))
+
+    ehlo_domain = resolve_ehlo_domain(
+        fp_banner, mta_profile, args.ehlo,
+        args.target, args.port, args.timeout,
+        args.verbose, ehlo_caps=ehlo_caps, force=args.force
+    )
+
+    auth_mechs = parse_auth_mechanisms(ehlo_caps)
+    if auth_mechs:
+        print(info(f"AUTH methods : {CYAN}{' '.join(auth_mechs)}{RESET}"))
+    else:
+        print(warn("No AUTH methods advertised in EHLO response"))
+        if not args.force:
+            c = safe_input(ask("Server may not support AUTH. Try anyway? [y/n] (default: y): ")).strip().lower()
+            if c not in ("", "y", "yes"):
+                sys.exit(0)
+
+    starttls_adv = "STARTTLS" in ehlo_caps.upper() or "STARTTLS" in fp_banner.upper()
+    if starttls_adv:
+        print(info(f"STARTTLS     : {GREEN}advertised{RESET}"))
+        if "--starttls" not in cli and "--no-starttls" not in cli:
+            c = safe_input(ask("Server supports STARTTLS. Use it? [y/n] (default: y): ")).strip().lower()
+            if c in ("n", "no"):
+                args.no_starttls = True
+                print(info("STARTTLS skipped"))
+            else:
+                args.starttls = True
+                print(ok("STARTTLS enabled"))
+    else:
+        print(info(f"STARTTLS     : {GRAY}not advertised{RESET}"))
+        if args.starttls:
+            print(warn("--starttls forced but server did not advertise it"))
+
+    users     = load_credential(args.brute_user)
+    passwords = load_credential(args.brute_pass)
+    if not users:
+        print(err("No usernames loaded — check --brute-user"))
+        sys.exit(1)
+    if not passwords:
+        print(err("No passwords loaded — check --brute-pass"))
+        sys.exit(1)
+
+    u_src = f"from '{args.brute_user}'" if os.path.isfile(args.brute_user) else "(literal)"
+    p_src = f"from '{args.brute_pass}'" if os.path.isfile(args.brute_pass) else "(literal)"
+    print(info(f"Users     : {GREEN}{len(users)}{RESET} {u_src}"))
+    print(info(f"Passwords : {GREEN}{len(passwords)}{RESET} {p_src}"))
+    if args.brute_threads > 1:
+        print(info(f"Threads   : {CYAN}{args.brute_threads}{RESET} (user-level — no lockout risk)"))
+
+    return dict(ehlo_domain=ehlo_domain, auth_mechs=auth_mechs,
+                users=users, passwords=passwords)
+
+
+# ── Auth brute force runner ────────────────────────────────────────────────────
+
+def run_auth_brute(target, port, ehlo_domain, timeout, verbose,
+                   use_starttls, no_starttls,
+                   users, passwords, mechanisms,
+                   delay=1.0, stop_on_first=False, brute_max=0, num_threads=1):
+    """
+    SMTP AUTH brute force with user-level threading.
+
+    Verbose ON  : full [>]/[<] traffic per attempt via send_cmd (bar cleared first).
+    Verbose OFF : single \\r progress line that updates in place.
+
+    Threading model: each thread owns distinct usernames — never two threads on
+    the same account simultaneously, which avoids per-account lockouts.
+    """
+    total_combos = len(users) * len(passwords)
+    cap_str      = f" (capped at {brute_max})" if brute_max else ""
+
+    # pre-run summary already printed by caller — just start
+
+    found_lock    = threading.Lock()
+    found         = []
+    counter_lock  = threading.Lock()
+    attempt_count = [0]
+    stop_event    = threading.Event()
+    brute_lock    = threading.Lock()
+
+    def brute_print(*a, **kw):
+        with brute_lock:
+            print("\r" + " " * 100, end="\r")  # clear progress line
+            print(*a, **kw)
+
+    def try_user(user):
+        for password in passwords:
+            if stop_event.is_set():
+                return
+            with counter_lock:
+                if brute_max and attempt_count[0] >= brute_max:
+                    stop_event.set()
+                    return
+                attempt_count[0] += 1
+                current = attempt_count[0]
+
+            progress = f"[{current}/{brute_max if brute_max else total_combos}]"
+
+            # verbose=True passes down to send_cmd which prints [>]/[<] with bar clearing
+            auth_ok, auth_detail = test_auth_credentials(
+                target, port, ehlo_domain, timeout, verbose,
+                use_starttls, no_starttls, user, password,
+                mechanisms=mechanisms if mechanisms else None
+            )
+
+            if auth_ok:
+                brute_print(f"{progress} {GREEN}{BOLD}[VALID]{RESET}  {user}:{password}  {GRAY}(via {auth_detail}){RESET}")
+                with found_lock:
+                    found.append((user, password, auth_detail))
+                if stop_on_first:
+                    stop_event.set()
+                    return
+            else:
+                if verbose:
+                    # Traffic already shown by send_cmd; just add verdict line
+                    brute_print(f"{progress} {GRAY}[-]{RESET}  {user}:{password[:3]}***  {GRAY}{auth_detail}{RESET}")
+                else:
+                    stars = "*" * min(len(password) - 3, 8) if len(password) > 3 else "***"
+                    with brute_lock:
+                        print(f"\r{GRAY}{progress} [{user}] {password[:3]}{stars}{RESET}",
+                              end="", flush=True)
+
+            time.sleep(delay + random.uniform(0, 0.1))
+
+    if num_threads <= 1:
+        for user in users:
+            if stop_event.is_set():
+                break
+            try_user(user)
+    else:
+        user_queue = queue.Queue()
+        for user in users:
+            user_queue.put(user)
+
+        def worker_brute():
+            while not stop_event.is_set():
+                try:
+                    user = user_queue.get_nowait()
+                except queue.Empty:
+                    break
+                try_user(user)
+                user_queue.task_done()
+
+        bthreads = []
+        for _ in range(min(num_threads, len(users))):
+            t = threading.Thread(target=worker_brute, daemon=True)
+            t.start()
+            bthreads.append(t)
+            time.sleep(0.05)
+        for t in bthreads:
+            t.join()
+
+    print()
+    if brute_max and attempt_count[0] >= brute_max:
+        print(warn(f"Reached --brute-max {brute_max} — stopped."))
+    return found
 
 
 # ── Session setup: RESUME path ─────────────────────────────────────────────────
@@ -1360,7 +1907,7 @@ def session_setup_fresh(args, cli):
     # ── Parse methods ──────────────────────────────────────────────────────────
     methods = parse_methods(args.method)
 
-    # ── Probe target — single connection: banner + EHLO caps ──────────────────
+    # ── Probe target — banner + EHLO caps ─────────────────────────────────────
     mta_profile = MTA_DEFAULT_PROFILE
     print("\n" + info("Probing target …"))
     fp_banner, ehlo_caps = probe_target(
@@ -1444,7 +1991,7 @@ def session_setup_fresh(args, cli):
         if args.starttls:
             print(warn("--starttls forced but server did not advertise it"))
 
-    # ── Re-probe EHLO after STARTTLS — servers often only advertise AUTH after TLS
+    # ── Re-probe EHLO after STARTTLS — AUTH mechs only advertised post-TLS on many servers
     if args.starttls and starttls_advertised:
         _, ehlo_caps_tls = probe_target(args.target, args.port, args.timeout, probe_ehlo=domain)
         if ehlo_caps_tls:
@@ -1452,10 +1999,9 @@ def session_setup_fresh(args, cli):
             if args.verbose:
                 print(detail("EHLO caps refreshed after STARTTLS"))
 
-    # ── AUTH check — before preflight ───────────────────────────────────────
-    # Detect if server advertises AUTH in EHLO response.
-    # If it does AND credentials were passed, verify them now.
-    # If credentials are missing but AUTH is required, warn the user.
+    # ── AUTH check — before preflight ─────────────────────────────────────────
+    # If server advertises AUTH and credentials were passed, verify them now.
+    # If AUTH is advertised but no credentials given, warn and ask to continue.
     auth_mechs_adv = parse_auth_mechanisms(ehlo_caps)
     if auth_mechs_adv:
         print(info(f"AUTH         : {CYAN}advertised{RESET} — mechs: {' '.join(auth_mechs_adv)}"))
@@ -1481,11 +2027,6 @@ def session_setup_fresh(args, cli):
         else:
             print(warn("Server advertises AUTH but --auth-user/--auth-pass not provided."))
             print(warn("Enumeration may fail if the server requires authentication."))
-            if not args.force:
-                c = safe_input(ask("Continue without credentials? [y/n] (default: y): ")).strip().lower()
-                if c in ("n", "no"):
-                    print(info("Re-run with --auth-user and --auth-pass to authenticate."))
-                    sys.exit(0)
             if not args.force:
                 c = safe_input(ask("Continue without credentials? [y/n] (default: y): ")).strip().lower()
                 if c in ("n", "no"):
@@ -1548,516 +2089,18 @@ def session_setup_fresh(args, cli):
     )
 
 
-# ── Credential loader ─────────────────────────────────────────────────────────
-
-def load_credential(value):
-    """
-    Auto-detect: if value is a path to an existing file, load all non-blank
-    lines as a list. Otherwise return it as a single-element list.
-    Lets --brute-user and --brute-pass accept both literals and wordlist files.
-    """
-    if value and os.path.isfile(value):
-        try:
-            with open(value, "r", errors="ignore") as fh:
-                items = [line.strip() for line in fh if line.strip()]
-            if not items:
-                print(err(f"File '{value}' is empty"))
-                sys.exit(1)
-            return items
-        except Exception as e:
-            print(err(f"Could not read '{value}': {e}"))
-            sys.exit(1)
-    return [value] if value else []
-
-
-# ── Auth helpers ───────────────────────────────────────────────────────────────
-
-def parse_auth_mechanisms(ehlo_caps):
-    """
-    Extract AUTH mechanisms from EHLO response.
-    e.g. '250-AUTH LOGIN PLAIN CRAM-MD5' -> ['LOGIN', 'PLAIN', 'CRAM-MD5']
-    """
-    for line in ehlo_caps.splitlines():
-        upper = line.upper()
-        if "AUTH" in upper:
-            parts = upper.split()
-            try:
-                idx = parts.index("AUTH")
-                return parts[idx + 1:]
-            except (ValueError, IndexError):
-                pass
-    return []
-
-
-def test_auth_credentials(target, port, domain, timeout, verbose,
-                           use_starttls, no_starttls, user, password,
-                           mechanisms=None):
-    """
-    Try a single user/password pair. Opens a fresh connection per attempt so
-    a failed AUTH does not poison the session.
-    Returns (True, mechanism_used) on success, (False, reason) on failure.
-    """
-    import base64, hmac, hashlib
-
-    s, _ = connect_and_init(target, port, domain, timeout, verbose,
-                             use_starttls, no_starttls, None, None)
-    if not s:
-        return False, "connection failed"
-
-    mechs_to_try = mechanisms or ["LOGIN", "PLAIN"]
-
-    try:
-        for mech in mechs_to_try:
-            mech = mech.upper()
-            try:
-                if mech == "LOGIN":
-                    res = send_cmd(s, "AUTH LOGIN\r\n", verbose)
-                    if not res.startswith("334"):
-                        continue
-                    send_cmd(s, base64.b64encode(user.encode()).decode() + "\r\n", verbose)
-                    auth_res = send_cmd(s, base64.b64encode(password.encode()).decode() + "\r\n", verbose)
-
-                elif mech == "PLAIN":
-                    plain = base64.b64encode(f"\x00{user}\x00{password}".encode()).decode()
-                    auth_res = send_cmd(s, f"AUTH PLAIN {plain}\r\n", verbose)
-
-                elif mech == "CRAM-MD5":
-                    res = send_cmd(s, "AUTH CRAM-MD5\r\n", verbose)
-                    if not res.startswith("334"):
-                        continue
-                    # Extract base64 challenge — take first line, strip "334 " prefix
-                    challenge_b64 = res.splitlines()[0].split(None, 1)[-1].strip()
-                    try:
-                        challenge = base64.b64decode(challenge_b64)
-                    except Exception:
-                        continue  # malformed challenge — skip this mech
-                    digest = hmac.new(password.encode(), challenge, hashlib.md5).hexdigest()
-                    response = base64.b64encode(f"{user} {digest}".encode()).decode()
-                    auth_res = send_cmd(s, response + "\r\n", verbose)
-
-                else:
-                    continue
-
-                if auth_res.startswith("235"):
-                    return True, mech
-
-                # 500/503 = command unrecognised — reconnect for next mech
-                if auth_res.startswith(("500", "503")):
-                    try: s.close()
-                    except: pass
-                    s, _ = connect_and_init(target, port, domain, timeout, verbose,
-                                             use_starttls, no_starttls, None, None)
-                    if not s:
-                        return False, "lost connection mid-attempt"
-
-            except Exception as e:
-                if verbose:
-                    print(detail(f"AUTH {mech} error: {e}"))
-                continue
-
-    finally:
-        try: s.close()
-        except: pass
-
-    return False, f"rejected ({', '.join(mechs_to_try)})"
-
-
-# ── Open relay ────────────────────────────────────────────────────────────────
-
-def _relay_name():
-    """Generate a realistic-looking sender/recipient local-part."""
-    first = random.choice([
-        "james","john","robert","michael","william","david","richard",
-        "thomas","charles","daniel","sarah","emily","jessica","ashley",
-        "amanda","melissa","stephanie","nicole","elizabeth","jennifer"
-    ])
-    last = random.choice([
-        "smith","johnson","williams","brown","jones","garcia","miller",
-        "davis","wilson","taylor","anderson","thomas","jackson","white",
-        "harris","martin","thompson","robinson","clark","rodriguez"
-    ])
-    sep = random.choice([".", "_", ""])
-    num = random.choice(["", str(random.randint(1, 99))])
-    return f"{first}{sep}{last}{num}"
-
-_FREEMAIL = ["gmail.com","outlook.com","yahoo.com","hotmail.com",
-             "protonmail.com","icloud.com","live.com","aol.com"]
-
-
-def check_open_relay(target, port, ehlo_domain, timeout, verbose,
-                     use_starttls, no_starttls, auth_user, auth_pass,
-                     relay_from=None, relay_to=None, target_domain=None):
-    """
-    Six-probe open relay test covering classic relay, null sender, and
-    source-routing bypass techniques. 250/251/252 on RCPT TO = relay open.
-    Returns list of result dicts.
-    """
-    local   = _relay_name()
-    d1, d2  = random.sample(_FREEMAIL, 2)
-    ext_from = relay_from or f"{local}@{d1}"
-    ext_to   = relay_to   or f"{local}@{d2}"
-    int_from = f"{local}@{target_domain}" if target_domain else ext_from
-    td       = target_domain or ehlo_domain
-    ext_user, ext_host = ext_to.split("@", 1)
-
-    tests = [
-        ("External → External",           ext_from, ext_to,                           False),
-        ("Internal → External",            int_from, ext_to,                           False),
-        ("Null sender → External",         "",       ext_to,                           False),
-        ("Source route  user%host@target", ext_from, f"{ext_user}%{ext_host}@{td}",   True),
-        ("Source route  user@host@target", ext_from, f"{ext_to}@{td}",                True),
-        ("Source route  @target:user@host",ext_from, f"@{td}:{ext_to}",               True),
-    ]
-
-    if not target_domain:
-        tests = [(l,mf,rt,r) for l,mf,rt,r in tests if not r]
-        print(warn("No relay domain — source-routing bypass tests skipped"))
-
-    print(f"\n[*] ── Open relay test ────────────────────────────────")
-    print(info(f"FROM : {ext_from}"))
-    print(info(f"TO   : {ext_to}"))
-    print(info(f"DOM  : {td}"))
-    print()
-
-    results    = []
-    open_count = 0
-
-    s, _ = connect_and_init(target, port, ehlo_domain, timeout, verbose,
-                             use_starttls, no_starttls, auth_user, auth_pass)
-    if not s:
-        print(err("Could not connect for relay test — skipping."))
-        return results
-
-    for label, mf, rt, _ in tests:
-        mf_addr = f"<{mf}>" if mf else "<>"
-        try:
-            reset_mail_state(s, verbose)
-            mail_res = send_cmd(s, f"MAIL FROM: {mf_addr}\r\n", verbose)
-
-            if not mail_res.startswith("250"):
-                result   = "skipped"
-                response = mail_res.strip()[:70]
-            else:
-                rcpt_res = send_cmd(s, f"RCPT TO: <{rt}>\r\n", verbose)
-                reset_mail_state(s, verbose)
-                code     = rcpt_res.strip()[:3]
-                response = rcpt_res.strip()[:70]
-                if code == "250":
-                    result = "OPEN";      open_count += 1
-                elif code in ("251","252"):
-                    result = "POTENTIAL"; open_count += 1
-                else:
-                    result = "closed"
-
-            results.append(dict(test=label, mail_from=mf_addr,
-                                rcpt_to=rt, response=response, result=result))
-
-        except Exception as e:
-            results.append(dict(test=label, mail_from=mf_addr,
-                                rcpt_to=rt, response=str(e)[:70], result="error"))
-            try: s.close()
-            except: pass
-            s, _ = connect_and_init(target, port, ehlo_domain, timeout, verbose,
-                                     use_starttls, no_starttls, auth_user, auth_pass)
-            if not s:
-                print(err("Lost connection — stopping relay test early."))
-                break
-
-    if s:
-        try: s.send(b"QUIT\r\n"); s.close()
-        except: pass
-
-    # Print table
-    COL = 38
-    print(f"[*] ── Relay results ──────────────────────────────────")
-    for r in results:
-        if   r["result"] == "OPEN":      badge = f"{RED}{BOLD}[OPEN RELAY]{RESET}"
-        elif r["result"] == "POTENTIAL": badge = f"{YELLOW}[POTENTIAL] {RESET}"
-        elif r["result"] == "closed":    badge = f"{GRAY}[closed]    {RESET}"
-        elif r["result"] == "skipped":   badge = f"{GRAY}[skipped]   {RESET}"
-        else:                            badge = f"{YELLOW}[error]     {RESET}"
-        print(f"  {badge}  {r['test'].ljust(COL)}  {GRAY}{r['response']}{RESET}")
-
-    print()
-    if open_count > 0:
-        print(err(f"OPEN RELAY CONFIRMED — {open_count} test(s) accepted relay!"))
-        print(warn("This server can forward mail for unauthorised senders. Report it."))
-    else:
-        print(ok("No open relay detected — all probe attempts rejected."))
-    print(f"[*] ──────────────────────────────────────────────────")
-    return results
-
-
-# ── Shared probe helper ────────────────────────────────────────────────────────
-
-def probe_target(target, port, timeout, probe_ehlo="probe.local"):
-    """Single connection to grab banner + EHLO capabilities."""
-    fp_banner = ""
-    ehlo_caps = ""
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(timeout)
-        s.connect((target, port))
-        try:
-            fp_banner = s.recv(4096).decode(errors="replace")
-        except socket.timeout:
-            fp_banner = ""
-        ehlo_res = send_cmd(s, f"EHLO {probe_ehlo}\r\n", False)
-        if not ehlo_res.startswith("250"):
-            ehlo_res = send_cmd(s, f"HELO {probe_ehlo}\r\n", False)
-        ehlo_caps = ehlo_res
-        s.send(b"QUIT\r\n")
-        s.close()
-    except Exception as e:
-        print(warn(f"Probe failed: {e}"))
-        if is_fatal_connection_error(e):
-            print(err("Target unreachable — aborting."))
-        sys.exit(1)
-    return fp_banner, ehlo_caps
-
-
-# ── Relay domain prompt ────────────────────────────────────────────────────────
-
-def ask_relay_domain(banner_fqdn, ehlo_domain):
-    """
-    Ask which domain to use for relay source-routing probes.
-    3 options: banner value / enter manually / skip source-routing tests.
-    Returns domain string or None (skip source-routing).
-    """
-    print("\n" + info("Set RELAY TARGET domain — used in source-routing bypass probes"))
-    print(detail("Source-routing tests need the target domain (e.g. target.example.com)"))
-
-    if banner_fqdn:
-        print(info(f"Banner gave  : {CYAN}{banner_fqdn}{RESET}"))
-        choice = safe_input(
-            f"[?] Domain to use?\n"
-            f"    [1] Use banner value: {banner_fqdn}\n"
-            f"    [2] Enter manually (take part of it or type your own)\n"
-            f"    [3] No domain — skip source-routing tests\n"
-            f"    Choice (default: 1): "
-        ).strip()
-        if choice == "3":
-            print(info("Source-routing tests will be skipped"))
-            return None
-        elif choice == "2":
-            raw = safe_input(f"[?] Enter domain (banner was '{banner_fqdn}'): ").strip().strip('"\' ').strip()
-            return raw if raw else banner_fqdn
-        return banner_fqdn
-    else:
-        print(info("No hostname found in banner"))
-        choice = safe_input(
-            f"[?] Domain to use?\n"
-            f"    [1] Same as EHLO ({ehlo_domain})\n"
-            f"    [2] Enter manually\n"
-            f"    [3] No domain — skip source-routing tests\n"
-            f"    Choice (default: 1): "
-        ).strip()
-        if choice == "3":
-            print(info("Source-routing tests will be skipped"))
-            return None
-        elif choice == "2":
-            raw = safe_input("[?] Enter domain: ").strip().strip('"\' ').strip()
-            return raw if raw else ehlo_domain
-        return ehlo_domain
-
-
-# ── Session setup: OPEN RELAY mode ────────────────────────────────────────────
-
-def session_setup_relay(args, cli):
-    """
-    Setup for --open-relay mode.
-    Probe → fingerprint → EHLO → relay domain → STARTTLS.
-    No methods, no preflight, no user list, no checkpoint.
-    """
-    print("\n" + info("Probing target …"))
-    fp_banner, ehlo_caps = probe_target(args.target, args.port, args.timeout,
-                                         probe_ehlo=args.ehlo or "probe.local")
-
-    mta_profile = fingerprint_mta(fp_banner)
-    mta_name    = mta_profile["name"]
-    if has_banner(fp_banner):
-        print(info(f"MTA detected : {CYAN}{mta_name}{RESET}"))
-        print(info(f"Banner       : {fp_banner.strip()[:80]}"))
-    else:
-        print(info(f"MTA detected : {CYAN}{mta_name}{RESET}"))
-        print(warn("No informative banner — server may be hardened."))
-
-    ehlo_domain = resolve_ehlo_domain(
-        fp_banner, mta_profile, args.ehlo,
-        args.target, args.port, args.timeout,
-        args.verbose, ehlo_caps=ehlo_caps, force=args.force
-    )
-
-    if args.relay_domain:
-        target_domain = args.relay_domain
-        print(info(f"Relay domain : {CYAN}{target_domain}{RESET} (from --relay-domain)"))
-    else:
-        banner_fqdn   = extract_domain_from_banner(fp_banner)
-        target_domain = ask_relay_domain(banner_fqdn, ehlo_domain)
-        if target_domain:
-            print(info(f"Relay domain : {CYAN}{target_domain}{RESET}"))
-
-    starttls_adv = "STARTTLS" in ehlo_caps.upper() or "STARTTLS" in fp_banner.upper()
-    if starttls_adv:
-        print(info(f"STARTTLS     : {GREEN}advertised{RESET}"))
-        if "--starttls" not in cli and "--no-starttls" not in cli:
-            c = safe_input(ask("Server supports STARTTLS. Use it? [y/n] (default: y): ")).strip().lower()
-            if c in ("n", "no"):
-                args.no_starttls = True
-                print(info("STARTTLS skipped"))
-            else:
-                args.starttls = True
-                print(ok("STARTTLS enabled"))
-    else:
-        print(info(f"STARTTLS     : {GRAY}not advertised{RESET}"))
-        if args.starttls:
-            print(warn("--starttls forced but server did not advertise it"))
-
-    return dict(ehlo_domain=ehlo_domain, target_domain=target_domain)
-
-
-# ── Session setup: BRUTE FORCE mode ───────────────────────────────────────────
-
-def session_setup_brute(args, cli):
-    """
-    Setup for --brute-user/--brute-pass mode.
-    Probe → fingerprint → EHLO → detect AUTH mechanisms → STARTTLS.
-    No preflight, no enumeration, no checkpoint.
-    Returns session dict including loaded users and passwords.
-    """
-    print("\n" + info("Probing target …"))
-    fp_banner, ehlo_caps = probe_target(args.target, args.port, args.timeout,
-                                         probe_ehlo=args.ehlo or "probe.local")
-
-    mta_profile = fingerprint_mta(fp_banner)
-    mta_name    = mta_profile["name"]
-    if has_banner(fp_banner):
-        print(info(f"MTA detected : {CYAN}{mta_name}{RESET}"))
-        print(info(f"Banner       : {fp_banner.strip()[:80]}"))
-    else:
-        print(info(f"MTA detected : {CYAN}{mta_name}{RESET}"))
-        print(warn("No informative banner — server may be hardened."))
-
-    ehlo_domain = resolve_ehlo_domain(
-        fp_banner, mta_profile, args.ehlo,
-        args.target, args.port, args.timeout,
-        args.verbose, ehlo_caps=ehlo_caps, force=args.force
-    )
-
-    auth_mechs = parse_auth_mechanisms(ehlo_caps)
-    if auth_mechs:
-        print(info(f"AUTH methods : {CYAN}{' '.join(auth_mechs)}{RESET}"))
-    else:
-        print(warn("No AUTH methods advertised in EHLO response"))
-        if not args.force:
-            c = safe_input(ask("Server may not support AUTH. Try anyway? [y/n] (default: y): ")).strip().lower()
-            if c not in ("", "y", "yes"):
-                sys.exit(0)
-
-    starttls_adv = "STARTTLS" in ehlo_caps.upper() or "STARTTLS" in fp_banner.upper()
-    if starttls_adv:
-        print(info(f"STARTTLS     : {GREEN}advertised{RESET}"))
-        if "--starttls" not in cli and "--no-starttls" not in cli:
-            c = safe_input(ask("Server supports STARTTLS. Use it? [y/n] (default: y): ")).strip().lower()
-            if c in ("n", "no"):
-                args.no_starttls = True
-                print(info("STARTTLS skipped"))
-            else:
-                args.starttls = True
-                print(ok("STARTTLS enabled"))
-    else:
-        print(info(f"STARTTLS     : {GRAY}not advertised{RESET}"))
-        if args.starttls:
-            print(warn("--starttls forced but server did not advertise it"))
-
-    # Load credentials using auto-detect
-    users     = load_credential(args.brute_user)
-    passwords = load_credential(args.brute_pass)
-
-    u_src = f"from '{args.brute_user}'" if os.path.isfile(args.brute_user) else "(literal)"
-    p_src = f"from '{args.brute_pass}'" if os.path.isfile(args.brute_pass) else "(literal)"
-    print(info(f"Users     : {GREEN}{len(users)}{RESET} {u_src}"))
-    print(info(f"Passwords : {GREEN}{len(passwords)}{RESET} {p_src}"))
-
-    return dict(ehlo_domain=ehlo_domain, auth_mechs=auth_mechs,
-                users=users, passwords=passwords)
-
-
-# ── Brute force runner ─────────────────────────────────────────────────────────
-
-def run_auth_brute(target, port, ehlo_domain, timeout, verbose,
-                   use_starttls, no_starttls,
-                   users, passwords, mechanisms,
-                   delay=1.0, stop_on_first=False, brute_max=0):
-    """
-    Run SMTP AUTH brute force across all user x password combinations.
-    Opens a fresh connection per attempt — avoids session poisoning.
-    Returns list of found (user, password, mechanism) tuples.
-    """
-    total_combos = len(users) * len(passwords)
-    cap_str = f" (capped at {brute_max})" if brute_max else ""
-    print(f"\n[*] ── SMTP AUTH brute force ────────────────────────")
-    print(info(f"Combos    : {total_combos}{cap_str}"))
-    print(info(f"Mechs     : {', '.join(mechanisms) if mechanisms else 'AUTO (LOGIN, PLAIN)'}"))
-    print(info(f"Delay     : {delay}s per attempt"))
-    if stop_on_first:
-        print(info("Mode      : stop on first success"))
-    print()
-
-    found   = []
-    attempt = 0
-
-    for user in users:
-        for password in passwords:
-            if brute_max and attempt >= brute_max:
-                print()  # newline clears progress line
-                print(warn(f"Reached --brute-max {brute_max} — stopping."))
-                return found
-
-            attempt += 1
-            progress = f"[{attempt}/{brute_max if brute_max else total_combos}]"
-
-            auth_ok, auth_detail = test_auth_credentials(
-                target, port, ehlo_domain, timeout, verbose,
-                use_starttls, no_starttls, user, password,
-                mechanisms=mechanisms or None
-            )
-
-            if auth_ok:
-                print(f"\r{progress} {GREEN}{BOLD}[VALID]{RESET}  {user}:{password}  {GRAY}(via {auth_detail}){RESET}")
-                found.append((user, password, auth_detail))
-                if stop_on_first:
-                    print(ok("Credential found — stopping (remove --brute-stop to continue)"))
-                    return found
-            else:
-                if verbose:
-                    print(f"{progress} {GRAY}[-]{RESET}  {user}:{password[:3]}***  {GRAY}{auth_detail}{RESET}")
-                else:
-                    stars = "*" * min(len(password) - 3, 8) if len(password) > 3 else "***"
-                    print(f"\r{GRAY}{progress} {user}:{password[:3]}{stars}{RESET}", end="", flush=True)
-
-            time.sleep(delay + random.uniform(0, 0.1))
-
-    print()
-    return found
-
+# ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
     print(BANNER)
     args = get_args()
     cli  = sys.argv[1:]
 
-    # ── Apply timing template first — affects timeout/delay used in probe ─────
+    # ── Apply timing template immediately — probe uses args.timeout ───────────
     tmpl = TIMING_TEMPLATES[args.timing]
     if "--delay"   not in cli: args.delay   = tmpl["delay"]
     if "--timeout" not in cli: args.timeout = tmpl["timeout"]
     if "--batch"   not in cli and "-b" not in cli: args.batch = tmpl["batch"]
-
-    # ── Four modes — mutually exclusive ──────────────────────────────────────
-    #   1. --open-relay  : relay test only, needs -t, no resume
-    #   2. --brute-user  : AUTH brute force, needs -t, no resume
-    #   3. --resume      : continue interrupted enum scan
-    #   4. (default)     : user enumeration, needs -t + user source
 
     brute_mode = bool(args.brute_user or args.brute_pass)
 
@@ -2070,7 +2113,7 @@ def main():
             print(err("--open-relay and --brute-user/--brute-pass cannot be combined."))
             sys.exit(1)
         if any([args.user, args.wordlist, args.name]):
-            print(err("--open-relay cannot be combined with enumeration flags (-u/-w/--name)."))
+            print(err("--open-relay cannot be combined with -u/-w/--name."))
             print(info("Run them separately."))
             sys.exit(1)
         if not args.target:
@@ -2081,17 +2124,29 @@ def main():
         ehlo_domain   = relay_sess["ehlo_domain"]
         target_domain = relay_sess["target_domain"]
 
+        print(f"\n{BLUE}[*] ── Open relay — pre-run summary ────────────────{RESET}")
+        print(f"[*] Target   : {CYAN}{args.target}:{args.port}{RESET}")
+        print(f"[*] EHLO     : {CYAN}{ehlo_domain}{RESET}")
+        print(f"[*] Domain   : {CYAN}{target_domain if target_domain else '(none — source-routing tests skipped)'}{RESET}")
+        _relay_tests = 6 if target_domain else 3
+        print(f"[*] Tests    : {_relay_tests} probes")
+        if args.relay_from:
+            print(f"[*] FROM     : {args.relay_from} (--relay-from)")
+        if args.relay_to:
+            print(f"[*] TO       : {args.relay_to} (--relay-to)")
+        print(f"{BLUE}[*] ────────────────────────────────────────────────{RESET}")
+        print()
+
         relay_results = check_open_relay(
             args.target, args.port, ehlo_domain, args.timeout, args.verbose,
             args.starttls, args.no_starttls, args.auth_user, args.auth_pass,
             relay_from=args.relay_from, relay_to=args.relay_to,
             target_domain=target_domain,
         )
-
         if relay_results:
             relay_file = f"relay_{args.target}_{args.port}.txt"
             with open(relay_file, "w") as rf:
-                rf.write(f"Open Relay Test — {args.target}:{args.port}\n")
+                rf.write(f"Open Relay Test -- {args.target}:{args.port}\n")
                 rf.write("=" * 60 + "\n")
                 for r in relay_results:
                     rf.write(f"[{r['result'].upper():10}] {r['test']}\n")
@@ -2099,7 +2154,7 @@ def main():
                     rf.write(f"           TO  : {r['rcpt_to']}\n")
                     rf.write(f"           RESP: {r['response']}\n\n")
             print(ok(f"Results saved to: {relay_file}"))
-        return  # relay mode done
+        return
 
     # ── Mode 2: AUTH BRUTE FORCE ──────────────────────────────────────────────
     if brute_mode:
@@ -2113,7 +2168,7 @@ def main():
             print(err("--brute-user/--brute-pass and --resume cannot be combined."))
             sys.exit(1)
         if any([args.user, args.wordlist, args.name]):
-            print(err("Brute force cannot be combined with enumeration flags (-u/-w/--name)."))
+            print(err("Brute force cannot be combined with -u/-w/--name."))
             print(info("Run them separately."))
             sys.exit(1)
         if not args.target:
@@ -2126,19 +2181,34 @@ def main():
         users       = brute_sess["users"]
         passwords   = brute_sess["passwords"]
 
-        # Resolve which AUTH method(s) to try
         if args.brute_method:
             if args.brute_method not in auth_mechs and auth_mechs:
                 print(warn(f"--brute-method {args.brute_method} not advertised — trying anyway"))
             mechs = [args.brute_method]
         elif auth_mechs:
-            # Prefer LOGIN > PLAIN > CRAM-MD5
             pref  = ["LOGIN", "PLAIN", "CRAM-MD5"]
             mechs = [m for m in pref if m in auth_mechs] or auth_mechs
-            print(info(f"Using mechs  : {CYAN}{' '.join(mechs)}{RESET} (auto-selected)"))
+            print(info(f"Auth method  : {CYAN}{' '.join(mechs)}{RESET} (auto-selected)"))
         else:
             mechs = ["LOGIN", "PLAIN"]
             print(warn("No AUTH advertised — defaulting to LOGIN + PLAIN"))
+
+        print(f"\n{BLUE}[*] ── Auth brute — pre-run summary ────────────────{RESET}")
+        print(f"[*] Target   : {CYAN}{args.target}:{args.port}{RESET}")
+        print(f"[*] EHLO     : {CYAN}{ehlo_domain}{RESET}")
+        print(f"[*] Method   : {CYAN}{' '.join(mechs)}{RESET}")
+        print(f"[*] Users    : {CYAN}{len(users)}{RESET}")
+        print(f"[*] Passwords: {CYAN}{len(passwords)}{RESET}")
+        print(f"[*] Combos   : {CYAN}{len(users) * len(passwords)}{RESET}")
+        print(f"[*] Delay    : {args.brute_delay}s per attempt")
+        if args.brute_threads > 1:
+            print(f"[*] Threads  : {CYAN}{args.brute_threads}{RESET} (user-level)")
+        if args.brute_stop:
+            print(f"[*] Mode     : {YELLOW}stop on first success{RESET}")
+        if args.brute_max:
+            print(f"[*] Max      : {args.brute_max} attempts")
+        print(f"{BLUE}[*] ────────────────────────────────────────────────{RESET}")
+        print()
 
         found = run_auth_brute(
             args.target, args.port, ehlo_domain, args.timeout, args.verbose,
@@ -2147,37 +2217,31 @@ def main():
             delay=args.brute_delay,
             stop_on_first=args.brute_stop,
             brute_max=args.brute_max,
+            num_threads=args.brute_threads,
         )
 
-        print(f"\n[*] ── Brute force summary ─────────────────────────")
+        print(f"\n[*] -- Brute force summary ----------------------------------")
         if found:
             print(ok(f"Found {len(found)} valid credential(s):"))
             for u, p, m in found:
                 print(f"  {GREEN}{BOLD}{u}:{p}{RESET}  {GRAY}(via {m}){RESET}")
             brute_file = f"brute_{args.target}_{args.port}.txt"
             with open(brute_file, "w") as bf:
-                bf.write(f"SMTP Auth Brute Force — {args.target}:{args.port}\n")
+                bf.write(f"SMTP Auth Brute Force -- {args.target}:{args.port}\n")
                 bf.write("=" * 60 + "\n")
                 for u, p, m in found:
                     bf.write(f"{u}:{p}  (via {m})\n")
             print(ok(f"Saved to: {brute_file}"))
         else:
             print(warn("No valid credentials found."))
-        return  # brute mode done
+        return
 
-    # ── Mode 3 + 4: ENUM (resume or fresh) ───────────────────────────────────
+    # ── Mode 3 + 4: ENUMERATION (resume or fresh) ────────────────────────────
     if not args.resume and not args.target:
         print(err("-t/--target is required (or use --resume to continue a scan)"))
         sys.exit(1)
 
-    # ── Timing summary ────────────────────────────────────────────────────────
-    effective = args.batch * args.threads if args.threads > 1 else args.batch
-    concurrency_note = f"  (effective {effective} users/cycle across {args.threads} threads)" if args.threads > 1 else ""
-    print(f"[*] Timing   : T{args.timing} {tmpl['name']} — delay={args.delay}s  timeout={args.timeout}s  batch={args.batch}{concurrency_note}")
-    if args.threads * args.batch >= 50:
-        print(warn(f"High concurrency ({args.threads} threads × batch {args.batch}) — may trigger rate limits"))
-
-    # ── Sanity checks before network activity ────────────────────────────────
+    # Sanity check before any network activity
     if args.user:
         u = args.user.strip()
         if os.path.sep in u or (os.path.exists(u) and os.path.isfile(u)):
@@ -2186,7 +2250,6 @@ def main():
             print(f"    To test a single user   : -u <username>  (e.g. -u root)")
             sys.exit(1)
 
-    # ── Session setup ─────────────────────────────────────────────────────────
     if args.resume:
         sess = session_setup_resume(args, cli)
     else:
@@ -2200,6 +2263,13 @@ def main():
     fp_banner   = sess["fp_banner"]
     starttls_advertised = sess["starttls_advertised"]
     ehlo_caps   = sess["ehlo_caps"]
+
+    # ── Timing summary (applied at top of main, just print here) ─────────────
+    effective = args.batch * args.threads if args.threads > 1 else args.batch
+    concurrency_note = f"  (effective {effective} users/cycle across {args.threads} threads)" if args.threads > 1 else ""
+    print(f"[*] Timing   : T{args.timing} {tmpl['name']} — delay={args.delay}s  timeout={args.timeout}s  batch={args.batch}{concurrency_note}")
+    if args.threads * args.batch >= 50:
+        print(warn(f"High concurrency ({args.threads} threads x batch {args.batch}) — may trigger rate limits"))
 
     # ── Build user list ───────────────────────────────────────────────────────
     seen      = set()
@@ -2235,29 +2305,38 @@ def main():
 
 
     # ── Final session + scan summary ──────────────────────────────────────────
-    print(f"\n[*] ── Session ────────────────────────────────────")
-    print(f"[*] Target   : {args.target}:{args.port}")
-    print(f"[*] EHLO     : {domain}")
+    print(f"\n{BLUE}[*] ── Session ────────────────────────────────────{RESET}")
+    print(f"[*] Target   : {CYAN}{args.target}:{args.port}{RESET}")
+    print(f"[*] EHLO     : {CYAN}{domain}{RESET}")
     if args.wordlist:
         print(f"[*] Wordlist : {args.wordlist}")
     if args.user:
-        print(f"[*] User     : {args.user}")
+        print(f"[*] User     : {CYAN}{args.user}{RESET}")
     if args.name:
         print(f"[*] Name     : {args.name}")
-    print(f"[*] Users    : {total}{f' (resumed: {len(_completed_set)} done)' if _completed_set else ''}")
+    print(f"[*] Users    : {CYAN}{total}{RESET}{f' {GRAY}(resumed: {len(_completed_set)} done){RESET}' if _completed_set else ''}")
     print(f"[*] Output   : {args.output} ({args.output_format})")
-    _tls_status = "forced" if args.starttls else ("disabled" if getattr(args, 'no_starttls', False) else ("restored" if args.resume else ("enabled (auto)" if starttls_advertised else "not available")))
+    if args.starttls:
+        _tls_status = f"{GREEN}forced{RESET}"
+    elif getattr(args, 'no_starttls', False):
+        _tls_status = f"{GRAY}disabled{RESET}"
+    elif args.resume:
+        _tls_status = f"{CYAN}restored{RESET}"
+    elif starttls_advertised:
+        _tls_status = f"{GREEN}enabled (auto){RESET}"
+    else:
+        _tls_status = f"{GRAY}not available{RESET}"
     print(f"[*] STARTTLS : {_tls_status}")
     if args.auth_user:
-        print(f"[*] AUTH     : {args.auth_user}")
+        print(f"[*] AUTH     : {CYAN}{args.auth_user}{RESET}")
     if args.threads > 1:
-        print(f"[*] Threads  : {args.threads}")
-    print(f"[*] ── Scan config ─────────────────────────────────")
-    print(f"[*] Method(s) : {','.join(methods)}")
+        print(f"[*] Threads  : {CYAN}{args.threads}{RESET}")
+    print(f"{BLUE}[*] ── Scan config ─────────────────────────────────{RESET}")
+    print(f"[*] Method(s) : {CYAN}{','.join(methods)}{RESET}")
     rcpt_fmt_str = f"user@{rcpt_domain}" if rcpt_domain else "plain username (no @domain)"
     print(f"[*] RCPT fmt  : {rcpt_fmt_str if 'RCPT' in methods else 'N/A'}")
     print(f"[*] MAIL FROM : {mail_from}{' (--mail-from)' if args.mail_from else ' (auto)'}")
-    print(f"[*] ───────────────────────────────────────────────")
+    print(f"{BLUE}[*] ───────────────────────────────────────────────{RESET}")
 
     print()
     print("[*] Waiting 3s before scan to avoid rate limiting …")
@@ -2276,7 +2355,7 @@ def main():
         "output":        args.output,
         "output_format": args.output_format,
         "auth_user":     args.auth_user,
-        "auth_pass":     args.auth_pass,  # stored for resume — checkpoint file is plaintext
+        "auth_pass":     args.auth_pass,  # stored for resume — checkpoint is plaintext
         "wordlist":      args.wordlist,
         "mta_profile":   mta_profile,
         "fp_banner":     fp_banner,
@@ -2365,7 +2444,11 @@ def main():
             conn_retry_count = 0
     
             for idx, user in batch:
-                progress = f"[T{thread_id}][{idx + 1}/{total}]"
+                # Show thread ID only when actually running multiple threads
+                if num_threads > 1:
+                    progress = f"[T{thread_id}][{idx + 1}/{total}]"
+                else:
+                    progress = f"[{idx + 1}/{total}]"
                 try:
                     if args.verbose:
                       thread_safe_print(f"{progress} → START {user}")
@@ -2391,8 +2474,8 @@ def main():
                             global_delay[0] = min(global_delay[0] * 1.5, 5.0)
                             current_delay = global_delay[0]
     
-                        thread_safe_print(f"{progress} " + warn(f"Backoff → {current_delay:.2f}s"))
-                        consecutive_ok = 0  # reset recovery counter after rate limit hit
+                        thread_safe_print(f"{progress} " + warn(f"Backoff -> {current_delay:.2f}s"))
+                        consecutive_ok = 0  # reset recovery counter after rate limit
                         time.sleep(current_delay + random.uniform(0, 0.2))
                         break
     
@@ -2438,12 +2521,12 @@ def main():
                             
     
                     elif result == "disabled":
-                        if args.verbose or args.user:
+                        if args.verbose or bool(args.user):
                             thread_safe_print(f"{progress} {GRAY}[x]   DISABLED{RESET}  : EXPN not supported")
-    
+
                     else:
-                        if args.verbose or args.user:
-                            thread_safe_print(f"{progress} [-]   INVALID   : {user}")
+                        if args.verbose or bool(args.user):
+                            thread_safe_print(f"{progress} {GRAY}[-]   INVALID{RESET}   : {user}")
     
                     consecutive_ok += 1
                     if consecutive_ok >= 20 and current_delay > args.delay:
