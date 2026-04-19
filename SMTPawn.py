@@ -247,6 +247,9 @@ def get_args():
                      help="Output file for valid users (default: valid_users.txt)")
     out.add_argument("--output-format",       choices=["txt","json","csv"], default="txt",
                      help="Output format: txt, json, csv (default: txt)")
+    out.add_argument("--output-dir",          default=None, metavar="DIR",
+                     help="Directory to write result files (relay/spf/brute).\n"
+                          "Default: current directory, fallback to home on permission error.")
     out.add_argument("--resume",              action="store_true",
                      help="Resume an interrupted enumeration scan from checkpoint")
 
@@ -328,7 +331,7 @@ def get_args():
     spf.add_argument("--spf-from",            default=None, metavar="ADDRESS",
                      help="Exact MAIL FROM address to use in SPF test.\n"
                           "Overrides --spf-domain for the internal spoof test.\n"
-                          "e.g. --spf-from ceo@isf.gov.lb")
+                          "e.g. --spf-from ceo@target.example.com")
     spf.add_argument("--spf-rcpt",            default=None, metavar="ADDRESS",
                      help="RCPT TO address for SPF test (default: garbage@spf-domain).")
 
@@ -575,7 +578,7 @@ def connect_and_init(target, port, domain, timeout, verbose, use_starttls=False,
                         if not r.startswith("334"): continue
                         chal_b64 = r.splitlines()[0].split(None, 1)[-1].strip()
                         try: chal = base64.b64decode(chal_b64)
-                        except: continue
+                        except (ValueError, Exception): continue
                         dig = hmac.new(auth_pass.encode(), chal, hashlib.md5).hexdigest()
                         resp = base64.b64encode(f"{auth_user} {dig}".encode()).decode()
                         ar = send_cmd(s, resp + "\r\n", verbose)
@@ -599,6 +602,8 @@ def connect_and_init(target, port, domain, timeout, verbose, use_starttls=False,
 
         return s, banner
 
+    except KeyboardInterrupt:
+        raise
     except Exception as e:
         print(warn(f"Connection error: {e}"))
         return None, None
@@ -615,6 +620,27 @@ def random_garbage(domain=None):
     rand = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
     user = f"zz_probe_{rand}_xXx"
     return f"{user}@{domain}" if domain else user
+
+
+def safe_open_write(filepath, output_dir=None):
+    """
+    Open a file for writing. If output_dir is set use that directory.
+    If permission denied on current dir, fall back to home directory.
+    Returns (file_object, actual_path).
+    """
+    import os
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        path = os.path.join(output_dir, os.path.basename(filepath))
+    else:
+        path = filepath
+    try:
+        return open(path, "w"), path
+    except PermissionError:
+        fallback = os.path.join(os.path.expanduser("~"), os.path.basename(filepath))
+        print(warn(f"Permission denied: {path}"))
+        print(warn(f"Falling back to: {fallback}"))
+        return open(fallback, "w"), fallback
 
 
 def safe_input(prompt, default=""):
@@ -893,7 +919,7 @@ def check_expn(s, user, verbose, mta_profile=None):
     res = send_cmd(s, f"EXPN {clean_user}\r\n", verbose)
     if detect_ratelimit(res):
         return "ratelimit", []
-    if res.startswith("500") or res.startswith("502") or res.startswith("504"):
+    if res.startswith("500") or res.startswith("502") or res.startswith("503") or res.startswith("504"):
         return "disabled", []
     if res.startswith("550") or res.startswith("551") or res.startswith("553") or res.startswith("500"):
         return "invalid", []
@@ -1080,54 +1106,46 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
             print(info(f"--force set — proceeding with {','.join(methods)} despite unreliable results."))
         return methods, (rcpt_domain if _rcpt_domain_set_by_preflight else "ASK_LATER")
 
-    # ── Case 3: other reliable options exist (selected may be reliable or not) ─
+    # ── Case 3: selected is reliable AND other reliable methods also exist ────
+    # Don't interrupt — selected is already working. Just note the alternatives.
+    # User can combine methods manually next run with -m RCPT,EXPN if desired.
     if all_reliable:
         print('\n' + ok(f"Selected method(s) {','.join(methods)} look reliable."))
-    else:
-        print('\n' + warn(f"WARNING: selected method(s) ({','.join(methods)}) may be unreliable."))
-    print(info(f"Reliable method(s) available: {', '.join(reliable)}"))
+        if other_reliable:
+            print(info(f"Other reliable method(s) also available: {', '.join(other_reliable)}"))
+            print(detail(f"To combine: -m {','.join(sorted(reliable))} (user must pass all)"))
+        return methods, (rcpt_domain if _rcpt_domain_set_by_preflight else "ASK_LATER")
 
-    # --no-method-switch: skip menu, keep selected if reliable, else pick first reliable
+    # ── Case 4: selected is unreliable, but other reliable methods exist ──────
+    # Interrupt and offer to switch.
+    print('\n' + warn(f"WARNING: selected method(s) ({','.join(methods)}) may be unreliable."))
+    print(info(f"Reliable alternative(s) available: {', '.join(other_reliable)}"))
+
+    # --no-method-switch: auto-select first reliable without asking
     if no_method_switch:
-        if all_reliable:
-            print(info(f"--no-method-switch: keeping {','.join(methods)}"))
-            return methods, (rcpt_domain if _rcpt_domain_set_by_preflight else "ASK_LATER")
-        else:
-            chosen = reliable[0] if reliable else methods
-            print(info(f"--no-method-switch: auto-selecting {','.join(chosen) if isinstance(chosen,list) else chosen}"))
-            return ([chosen] if isinstance(chosen, str) else chosen), rcpt_domain
+        chosen = reliable[0] if reliable else methods
+        print(info(f"--no-method-switch: auto-selecting {chosen}"))
+        return [chosen], rcpt_domain
 
-    # Build options list
+    # Build options: alternatives only (selected is unreliable so not offered as default)
     options = []
-
-    # Option 1: keep selected (only show if selected is reliable)
-    if all_reliable:
-        options.append((methods, f"Keep {','.join(methods)} (current)"))
-
-    # Singular alternatives (other reliable ones not already selected)
     for m in other_reliable:
         options.append(([m], f"{m} only"))
-
-    # All pair combinations from reliable pool (skip if only 1 reliable)
-    if len(reliable) > 1:
-        for r in range(2, len(reliable) + 1):
-            for combo in combinations(reliable, r):
+    if len(other_reliable) > 1:
+        for r in range(2, len(other_reliable) + 1):
+            for combo in combinations(other_reliable, r):
                 combo_list = sorted(combo)
-                # Skip if already listed as singular or keep
-                if combo_list not in [o[0] for o in options]:
-                    label = f"{','.join(combo_list)} — must pass all" if r > 1 else f"{combo_list[0]} only"
-                    options.append((combo_list, label))
+                label = f"{','.join(combo_list)} — must pass all"
+                options.append((combo_list, label))
 
-    print(f"")
+    print()
     for i, (_, label) in enumerate(options, 1):
         print(f"    [{i}] {label}")
-    if not all_reliable:
-        print(f"    [0] Keep {','.join(methods)} anyway (unreliable, expect false positives)")
+    print(f"    [0] Keep {','.join(methods)} anyway (unreliable, expect false positives)")
 
-    default = "1"
-    pick = safe_input(f"[?] Choose (default: {default}): ").strip()
+    pick = safe_input(f"[?] Choose (default: 1): ").strip()
 
-    if pick == "0" and not all_reliable:
+    if pick == "0":
         if not force:
             proceed = safe_input(f"[?] Proceed with {','.join(methods)} (expect false positives)? [y/n] (default: y): ").strip().lower()
             if proceed not in ("", "y", "yes"):
@@ -1146,7 +1164,7 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
         else:
             print(warn(f"Invalid choice — keeping {','.join(methods)}"))
     except ValueError:
-        print(warn(f"Invalid choice — keeping {','.join(methods)}"))
+        print(warn(f"Invalid input — keeping {','.join(methods)}"))
 
     return methods, (rcpt_domain if _rcpt_domain_set_by_preflight else "ASK_LATER")
 
@@ -1218,8 +1236,16 @@ def save_checkpoint_threadsafe(total, target, session_config=None):
         data["session"] = session_config
 
     with _file_lock:
-        with open(CHECKPOINT_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+        try:
+            with open(CHECKPOINT_FILE, "w") as f:
+                json.dump(data, f, indent=2)
+        except PermissionError:
+            import tempfile, os
+            fallback = os.path.join(tempfile.gettempdir(), CHECKPOINT_FILE)
+            with open(fallback, "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass  # never crash the scan over a checkpoint write failure
 
 def save_result(entry, output_file, fmt):
     """Save a result entry to file atomically — safe for concurrent threads."""
@@ -1227,37 +1253,42 @@ def save_result(entry, output_file, fmt):
     tag = " | ".join(f"{m}:{r}" for m, r in method_results.items()) if method_results else ""
 
     with _file_lock:
-        if fmt == "txt":
-            with open(output_file, "a") as f:
-                line = entry["username"]
-                if tag:
-                    line += f"  [{tag}]"
-                f.write(line + "\n")
-                if entry.get("expn_expanded"):
-                    for addr in entry["expn_expanded"]:
-                        f.write(f"  expands_to: {addr}\n")
+        try:
+            if fmt == "txt":
+                with open(output_file, "a") as f:
+                    line = entry["username"]
+                    if tag:
+                        line += f"  [{tag}]"
+                    f.write(line + "\n")
+                    if entry.get("expn_expanded"):
+                        for addr in entry["expn_expanded"]:
+                            f.write(f"  expands_to: {addr}\n")
 
-        elif fmt == "json":
-            # Append-safe JSON: use newline-delimited JSON (one object per line)
-            # More robust than read-modify-write under concurrent access
-            with open(output_file, "a") as f:
-                f.write(json.dumps(entry) + "\n")
+            elif fmt == "json":
+                with open(output_file, "a") as f:
+                    f.write(json.dumps(entry) + "\n")
 
-        elif fmt == "csv":
-            file_exists = os.path.exists(output_file)
-            with open(output_file, "a", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=["username", "status", "methods", "method_results", "expn_expanded"])
-                if not file_exists:
-                    writer.writeheader()
-                writer.writerow({
-                    "username":       entry["username"],
-                    "status":         entry["status"],
-                    "methods":        ",".join(entry.get("methods", [])),
-                    "method_results": " | ".join(f"{m}:{r}" for m,r in method_results.items()) if method_results else "",
-                    "expn_expanded":  ",".join(entry.get("expn_expanded", []))
-                })
+            elif fmt == "csv":
+                file_exists = os.path.exists(output_file)
+                with open(output_file, "a", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=["username", "status", "methods", "method_results", "expn_expanded"])
+                    if not file_exists:
+                        writer.writeheader()
+                    writer.writerow({
+                        "username":       entry["username"],
+                        "status":         entry["status"],
+                        "methods":        ",".join(entry.get("methods", [])),
+                        "method_results": " | ".join(f"{m}:{r}" for m,r in method_results.items()) if method_results else "",
+                        "expn_expanded":  ",".join(entry.get("expn_expanded", []))
+                    })
+        except PermissionError as e:
+            print(warn(f"Could not write to {output_file}: {e}"))
+            print(warn("Use --output-dir to specify a writable directory."))
 
 def progress_monitor(total):
+    last_done     = -1
+    stall_ticks   = 0
+    MAX_STALL     = 60  # exit after 30s with no progress (60 × 0.5s)
     while True:
         time.sleep(0.5)
 
@@ -1288,6 +1319,14 @@ def progress_monitor(total):
 
         if done >= total:
             break
+        # Exit if no progress for MAX_STALL ticks — workers may have all died
+        if done == last_done:
+            stall_ticks += 1
+            if stall_ticks >= MAX_STALL:
+                break
+        else:
+            stall_ticks = 0
+            last_done   = done
 
 
 def input_listener(total):
@@ -1301,8 +1340,10 @@ def input_listener(total):
 
             print("\n" + info(f"Snapshot → {done}/{total} | valid={GREEN}{valid}{RESET} | potential={YELLOW}{potential}{RESET}"))
 
-        except:
+        except (EOFError, OSError):
             break
+
+
 def is_fatal_connection_error(exc):
     msg = str(exc).lower()
     return any(x in msg for x in [
@@ -1799,6 +1840,8 @@ def probe_target(target, port, timeout, probe_ehlo="probe.local"):
         ehlo_caps = ehlo_res
         s.send(b"QUIT\r\n")
         s.close()
+    except KeyboardInterrupt:
+        raise  # let main SIGINT handler deal with it
     except Exception as e:
         print(warn(f"Probe failed: {e}"))
         if is_fatal_connection_error(e):
@@ -2471,7 +2514,9 @@ def main():
     args = get_args()
     cli  = sys.argv[1:]
 
-    # ── Apply timing template immediately — probe uses args.timeout ───────────
+    # ── Apply timing template — sets delay/timeout/batch from -T flag ────────
+    # For resume mode, session_setup_resume will then restore saved values
+    # unless CLI flags explicitly override them.
     tmpl = TIMING_TEMPLATES[args.timing]
     if "--delay"   not in cli: args.delay   = tmpl["delay"]
     if "--timeout" not in cli: args.timeout = tmpl["timeout"]
@@ -2532,14 +2577,15 @@ def main():
         )
         if relay_results:
             relay_file = f"relay_{args.target}_{args.port}.txt"
-            with open(relay_file, "w") as rf:
-                rf.write(f"Open Relay Test -- {args.target}:{args.port}\n")
-                rf.write("=" * 60 + "\n")
+            fh, relay_file = safe_open_write(relay_file, getattr(args, "output_dir", None))
+            with fh:
+                fh.write(f"Open Relay Test -- {args.target}:{args.port}\n")
+                fh.write("=" * 60 + "\n")
                 for r in relay_results:
-                    rf.write(f"[{r['result'].upper():10}] {r['test']}\n")
-                    rf.write(f"           FROM: {r['mail_from']}\n")
-                    rf.write(f"           TO  : {r['rcpt_to']}\n")
-                    rf.write(f"           RESP: {r['response']}\n\n")
+                    fh.write(f"[{r['result'].upper():10}] {r['test']}\n")
+                    fh.write(f"           FROM: {r['mail_from']}\n")
+                    fh.write(f"           TO  : {r['rcpt_to']}\n")
+                    fh.write(f"           RESP: {r['response']}\n\n")
             print(ok(f"Results saved to: {relay_file}"))
         return
 
@@ -2570,7 +2616,7 @@ def main():
             spoof_domain = args.spf_domain
             print(info(f"Spoof domain : {CYAN}{spoof_domain}{RESET} (from --spf-domain)"))
         else:
-            # Derive from ehlo_domain: mail.isf.gov.lb → isf.gov.lb
+            # Derive from ehlo_domain: mail.target.com → target.com
             parts        = ehlo_domain.rstrip(".").split(".")
             spoof_domain = ".".join(parts[1:]) if len(parts) > 2 else ehlo_domain
             print(info(f"Spoof domain : {CYAN}{spoof_domain}{RESET} (derived from EHLO)"))
@@ -2596,15 +2642,16 @@ def main():
 
         if spf_results:
             spf_file = f"spf_{args.target}_{args.port}.txt"
-            with open(spf_file, "w") as sf:
-                sf.write(f"SPF Enforcement Check -- {args.target}:{args.port}\n")
-                sf.write("=" * 60 + "\n")
-                sf.write(f"Spoofed domain : {spoof_domain}\n\n")
+            fh, spf_file = safe_open_write(spf_file, getattr(args, "output_dir", None))
+            with fh:
+                fh.write(f"SPF Enforcement Check -- {args.target}:{args.port}\n")
+                fh.write("=" * 60 + "\n")
+                fh.write(f"Spoofed domain : {spoof_domain}\n\n")
                 for r in spf_results:
-                    sf.write(f"[{r['result'].upper():14}] {r['test']}\n")
-                    sf.write(f"               FROM: {r['mail_from']}\n")
-                    sf.write(f"               TO  : {r['rcpt_to']}\n")
-                    sf.write(f"               RESP: {r['response']}\n\n")
+                    fh.write(f"[{r['result'].upper():14}] {r['test']}\n")
+                    fh.write(f"               FROM: {r['mail_from']}\n")
+                    fh.write(f"               TO  : {r['rcpt_to']}\n")
+                    fh.write(f"               RESP: {r['response']}\n\n")
             print(ok(f"Results saved to: {spf_file}"))
         return
 
@@ -2678,11 +2725,12 @@ def main():
             for u, p, m in found:
                 print(f"  {GREEN}{BOLD}{u}:{p}{RESET}  {GRAY}(via {m}){RESET}")
             brute_file = f"brute_{args.target}_{args.port}.txt"
-            with open(brute_file, "w") as bf:
-                bf.write(f"SMTP Auth Brute Force -- {args.target}:{args.port}\n")
-                bf.write("=" * 60 + "\n")
+            fh, brute_file = safe_open_write(brute_file, getattr(args, "output_dir", None))
+            with fh:
+                fh.write(f"SMTP Auth Brute Force -- {args.target}:{args.port}\n")
+                fh.write("=" * 60 + "\n")
                 for u, p, m in found:
-                    bf.write(f"{u}:{p}  (via {m})\n")
+                    fh.write(f"{u}:{p}  (via {m})\n")
             print(ok(f"Saved to: {brute_file}"))
         else:
             print(warn("No valid credentials found."))
