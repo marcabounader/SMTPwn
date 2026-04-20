@@ -202,8 +202,10 @@ def get_args():
     )
     # ── TARGET ───────────────────────────────────────────────────────────────
     tgt = parser.add_argument_group("TARGET")
-    tgt.add_argument("-t", "--target",   required=False, metavar="IP/HOST",
-                     help="Target SMTP server IP or hostname")
+    tgt.add_argument("-t", "--target",   required=False, metavar="IP/HOST/FILE",
+                     help="Target IP, hostname, or path to a file of targets (one per line).\n"
+                          "Auto-detected: if the value is an existing file it is loaded as a\n"
+                          "target list and each host is scanned in sequence.")
     tgt.add_argument("-p", "--port",     type=int, default=25, metavar="PORT",
                      help="SMTP port (default: 25).\n25   = SMTP relay (plaintext + optional STARTTLS)\n587  = SMTP submission (STARTTLS + AUTH required)\n465  = SMTPS — implicit TLS from first byte (use --ssl)\n")
 
@@ -868,18 +870,17 @@ def check_rcpt(s, user, domain, mail_from, verbose, mta_profile=None):
       251  = user not local, will forward (valid)
       252  = cannot verify but will attempt (potential)
       421/450/451/452 = rate limit / temp fail
-      530  = must issue STARTTLS first (config issue)
-      535  = auth required (config issue)
+      530 on MAIL FROM = server requires auth globally (needs_auth — scan useless)
+      530 on RCPT TO   = user EXISTS, auth required to deliver (potential — keep scanning)
+      534/535  = auth mechanism / credentials issue
       550/551/553/554 = user does not exist (invalid)
       anything else = invalid
     """
     reset_mail_state(s, verbose)
     mail_res = send_cmd(s, f"MAIL FROM: <{mail_from}>\r\n", verbose)
     if not mail_res.startswith("250"):
-        # MAIL FROM rejected — could be auth/TLS required
-        if mail_res.startswith("530"):
-            return "needs_starttls"
-        if mail_res.startswith("535") or mail_res.startswith("534"):
+        # MAIL FROM rejected — server requires auth to send anything at all
+        if mail_res.startswith("530") or mail_res.startswith("535") or mail_res.startswith("534"):
             return "needs_auth"
         reset_mail_state(s, verbose)
         return "invalid"
@@ -893,10 +894,11 @@ def check_rcpt(s, user, domain, mail_from, verbose, mta_profile=None):
         return "valid"
     if res.startswith("252"):
         return "potential"
-    if res.startswith("530"):
-        return "needs_starttls"
-    if res.startswith("535") or res.startswith("534"):
-        return "needs_auth"
+    # 530 on RCPT TO after MAIL FROM succeeded:
+    # Server found the user, then gated on auth for delivery.
+    # This means the user EXISTS — mark as potential.
+    if res.startswith("530") or res.startswith("534") or res.startswith("535"):
+        return "potential"
     return "invalid"
 
 
@@ -984,9 +986,12 @@ def validate_user(s, methods, user, domain, mail_from, verbose, mta_profile=None
         if res == "ratelimit":
             return "ratelimit", results, expn_data
 
-        if res in ("needs_starttls", "needs_auth"):
-            print(warn(f"{method} returned '{res}' — check --starttls or --auth-user/--auth-pass"))
-            return "invalid", results, expn_data
+        if res == "needs_auth":
+            # MAIL FROM rejected — server requires authentication globally.
+            # Every user will get this response. Stop scanning and warn clearly.
+            print(warn(f"Server requires authentication — MAIL FROM rejected (530/535)."))
+            print(warn("Re-run with --auth-user and --auth-pass, or try --starttls first."))
+            return "needs_auth", results, expn_data
 
         if res == "invalid":
             return "invalid", results, expn_data
@@ -1174,11 +1179,14 @@ def preflight_check(target, port, domain, methods, timeout, verbose, mail_from, 
 CHECKPOINT_FILE = ".smtpwn_checkpoint"
 
 def load_checkpoint(target):
-    if not os.path.exists(CHECKPOINT_FILE):
+    import tempfile as _tf
+    _cp_tmp = os.path.join(_tf.gettempdir(), CHECKPOINT_FILE)
+    _cp_use = CHECKPOINT_FILE if os.path.exists(CHECKPOINT_FILE) else _cp_tmp
+    if not os.path.exists(_cp_use):
         return set()
 
     try:
-        with open(CHECKPOINT_FILE) as f:
+        with open(_cp_use) as f:
             data = json.load(f)
 
         if data.get("target") == target:
@@ -1403,9 +1411,14 @@ def probe_auth_required(target, port, ehlo_domain, timeout, verbose,
     Sends MAIL FROM + RCPT TO with a garbage address on a fresh connection
     and reads the response code:
       530 / 534 / 535  = authentication required (silent gate)
-      550 / 551 / 553  = server is accepting commands normally (no auth needed)
+      550 / 551 / 553  = server accepts commands normally (no auth needed)
       250 / 252        = server accepted the address (open or catch-all)
       421 / 450 / 451  = rate limited / temporary — treat as unknown
+
+    Edge case: some servers return 550 (unknown user) for garbage addresses
+    but 530 (auth required) for real users. In that case this probe returns
+    "not_needed" but the scan will encounter 530 on real usernames and
+    classify them as "potential" (user exists, auth required to deliver).
 
     Returns: "required" | "not_needed" | "unknown"
     """
@@ -2169,12 +2182,20 @@ def session_setup_resume(args, cli):
     FIXED settings always come from checkpoint.
     ADJUSTABLE settings come from checkpoint unless CLI flags override them.
     """
-    if not os.path.exists(CHECKPOINT_FILE):
+    import tempfile as _tempfile
+    _cp_tmp  = os.path.join(_tempfile.gettempdir(), CHECKPOINT_FILE)
+    _cp_file = CHECKPOINT_FILE
+    if not os.path.exists(_cp_file) and os.path.exists(_cp_tmp):
+        print(info(f"Checkpoint found in temp dir: {_cp_tmp}"))
+        _cp_file = _cp_tmp
+    elif not os.path.exists(_cp_file):
         print(err("No checkpoint file found — cannot resume."))
+        print(info(f"Looked in: {os.path.abspath(CHECKPOINT_FILE)}"))
+        print(info(f"Also checked: {_cp_tmp}"))
         sys.exit(1)
 
     try:
-        with open(CHECKPOINT_FILE) as f:
+        with open(_cp_file) as f:
             data = json.load(f)
 
         session = data.get("session", {})
@@ -2221,6 +2242,8 @@ def session_setup_resume(args, cli):
         args.auth_pass     = session.get("auth_pass", args.auth_pass)
         args.wordlist      = session.get("wordlist", args.wordlist)
         args.mail_from     = session.get("mail_from", args.mail_from)
+        # Full user list — preserves --name variations and -u single user
+        _resumed_user_list = session.get("user_list", [])
 
         domain      = session.get("domain", "pentest.local")
         methods     = session.get("methods", ["RCPT"])
@@ -2264,6 +2287,7 @@ def session_setup_resume(args, cli):
             fp_banner=fp_banner, ehlo_caps=ehlo_caps,
             starttls_advertised=False,
             preflight_mail_from=mail_from,
+            resumed_user_list=_resumed_user_list,
         )
 
     except Exception as e:
@@ -2538,6 +2562,8 @@ def main():
 
     # ── Mode 1: OPEN RELAY ────────────────────────────────────────────────────
     if args.open_relay:
+        if args.target and os.path.isfile(args.target):
+            print(err("--open-relay cannot be combined with a target file.")); sys.exit(1)
         if args.resume:
             print(err("--open-relay and --resume cannot be combined."))
             sys.exit(1)
@@ -2591,6 +2617,8 @@ def main():
 
     # ── Mode 1b: SPF ENFORCEMENT CHECK ───────────────────────────────────────
     if args.spf_check:
+        if args.target and os.path.isfile(args.target):
+            print(err("--spf-check cannot be combined with a target file.")); sys.exit(1)
         if args.resume:
             print(err("--spf-check and --resume cannot be combined.")); sys.exit(1)
         if brute_mode:
@@ -2657,6 +2685,8 @@ def main():
 
     # ── Mode 2: AUTH BRUTE FORCE ──────────────────────────────────────────────
     if brute_mode:
+        if args.target and os.path.isfile(args.target):
+            print(err("--brute-user/--brute-pass cannot be combined with a target file.")); sys.exit(1)
         if not args.brute_user:
             print(err("--brute-pass requires --brute-user"))
             sys.exit(1)
@@ -2737,6 +2767,85 @@ def main():
         return
 
     # ── Mode 3 + 4: ENUMERATION (resume or fresh) ────────────────────────────
+
+    # Build target list — auto-detect if -t is a file path or a literal host
+    targets = []
+    if args.target:
+        if os.path.isfile(args.target):
+            # -t points to a file — load all hosts from it
+            if args.resume:
+                print(err("--resume cannot be combined with a target file."))
+                sys.exit(1)
+            try:
+                with open(args.target, "r", errors="ignore") as _tf:
+                    for _line in _tf:
+                        _host = _line.strip()
+                        if _host and not _host.startswith("#"):
+                            targets.append(_host)
+            except Exception as e:
+                print(err(f"Could not read target file: {e}"))
+                sys.exit(1)
+            if not targets:
+                print(err(f"Target file is empty: {args.target}"))
+                sys.exit(1)
+            # Remove duplicates while preserving order
+            seen_t = set()
+            targets = [h for h in targets if not (h in seen_t or seen_t.add(h))]
+            print(info(f"Target file loaded — {len(targets)} host(s) to scan sequentially"))
+        else:
+            # -t is a literal IP or hostname
+            targets.append(args.target)
+
+    if not args.resume and not targets:
+        print(err("-t/--target is required (IP, hostname, or file path — or use --resume)"))
+        sys.exit(1)
+
+    # Multi-target: invoke self as subprocess per host for clean state isolation
+    if len(targets) > 1:
+        import subprocess
+        # Build base CLI without -t/--target (will be added per target)
+        skip_next = False
+        base_cli = []
+        for i, arg in enumerate(cli):
+            if skip_next:
+                skip_next = False
+                continue
+            if arg in ("-t", "--target") and i + 1 < len(cli):
+                skip_next = True
+                continue
+            if arg.startswith("--target="):
+                continue
+            base_cli.append(arg)
+
+        results_files = []
+        for t_idx, host in enumerate(targets, 1):
+            print(f"\n{BLUE}{'='*54}{RESET}")
+            print(f"{BLUE}[*] Target {t_idx}/{len(targets)}: {CYAN}{host}:{args.port}{RESET}")
+            print(f"{BLUE}{'='*54}{RESET}")
+            # Per-target output file
+            _base, _ext = os.path.splitext(args.output)
+            _safe = host.replace(".", "_").replace(":", "_")
+            per_out = f"{_base}_{_safe}{_ext}"
+            results_files.append((host, per_out))
+            _extra = [] if "--force" in base_cli else ["--force"]
+            target_cli = [sys.argv[0]] + base_cli + ["-t", host, "-o", per_out] + _extra
+            subprocess.run(target_cli, check=False)
+            print(ok(f"Target {t_idx}/{len(targets)} ({host}) done — {per_out}"))
+
+        print(f"\n{BLUE}[*] All {len(targets)} targets complete.{RESET}")
+        print(info("Per-target output files:"))
+        for host, f in results_files:
+            if os.path.exists(f):
+                lines = sum(1 for _ in open(f))
+                print(f"  {CYAN}{host}{RESET} → {f} ({lines} results)")
+            else:
+                print(f"  {CYAN}{host}{RESET} → {f} (no results)")
+        return
+
+    # Single target
+    if targets:
+        args.target = targets[0]
+
     if not args.resume and not args.target:
         print(err("-t/--target is required (or use --resume to continue a scan)"))
         sys.exit(1)
@@ -2752,6 +2861,8 @@ def main():
 
     if args.resume:
         sess = session_setup_resume(args, cli)
+        # Re-derive tmpl after resume restores args.timing from checkpoint
+        tmpl = TIMING_TEMPLATES[args.timing]
     else:
         sess = session_setup_fresh(args, cli)
 
@@ -2781,22 +2892,27 @@ def main():
             seen.add(u)
             all_users.append(u)
 
-    if args.user:
-        add_user(args.user)
-    if args.name:
-        variations = generate_username_variations(args.name)
-        print(f"[*] Generated {len(variations)} username variations from '{args.name}':")
-        for v in variations:
-            print(f"    {v}")
-            add_user(v)
-    if args.wordlist:
-        try:
-            with open(args.wordlist, "r", errors="ignore") as fh:
-                for line in fh:
-                    add_user(line)
-        except FileNotFoundError:
-            print(err(f"Wordlist not found: {args.wordlist}"))
-            sys.exit(1)
+    _resumed = sess.get("resumed_user_list", [])
+    if _resumed:
+        for _u in _resumed:
+            add_user(_u)
+    else:
+        if args.user:
+            add_user(args.user)
+        if args.name:
+            variations = generate_username_variations(args.name)
+            print(f"[*] Generated {len(variations)} username variations from '{args.name}':")
+            for v in variations:
+                print(f"    {v}")
+                add_user(v)
+        if args.wordlist:
+            try:
+                with open(args.wordlist, "r", errors="ignore") as fh:
+                    for line in fh:
+                        add_user(line)
+            except FileNotFoundError:
+                print(err(f"Wordlist not found: {args.wordlist}"))
+                sys.exit(1)
 
     if not all_users:
         print(err("Provide at least -u <user>, --name <n>, or -w <wordlist>."))
@@ -2808,12 +2924,11 @@ def main():
     print(f"\n{BLUE}[*] ── Session ────────────────────────────────────{RESET}")
     print(f"[*] Target   : {CYAN}{args.target}:{args.port}{RESET}")
     print(f"[*] EHLO     : {CYAN}{domain}{RESET}")
-    if args.wordlist:
-        print(f"[*] Wordlist : {args.wordlist}")
+    _wl_display = args.wordlist or ("(restored from checkpoint)" if args.resume else None)
+    if _wl_display:
+        print(f"[*] Wordlist : {_wl_display}")
     if args.user:
         print(f"[*] User     : {CYAN}{args.user}{RESET}")
-    if args.name:
-        print(f"[*] Name     : {args.name}")
     print(f"[*] Users    : {CYAN}{total}{RESET}{f' {GRAY}(resumed: {len(_completed_set)} done){RESET}' if _completed_set else ''}")
     print(f"[*] Output   : {args.output} ({args.output_format})")
     if args.starttls:
@@ -2839,8 +2954,11 @@ def main():
     print(f"{BLUE}[*] ───────────────────────────────────────────────{RESET}")
 
     print()
-    print("[*] Waiting 3s before scan to avoid rate limiting …")
-    time.sleep(3)
+    if not args.resume:
+        print("[*] Waiting 3s before scan to avoid rate limiting …")
+        time.sleep(3)
+    else:
+        print(info("Resuming — skipping pre-scan wait."))
 
     # ── Build session config for checkpoint ───────────────────────────────────
     session_config = {
@@ -2857,6 +2975,7 @@ def main():
         "auth_user":     args.auth_user,
         "auth_pass":     args.auth_pass,  # stored for resume — checkpoint is plaintext
         "wordlist":      args.wordlist,
+        "user_list":     all_users,       # full list — survives --name and -u
         "mta_profile":   mta_profile,
         "fp_banner":     fp_banner,
         "ehlo_caps":     ehlo_caps,
@@ -2958,7 +3077,19 @@ def main():
                         mta_profile=mta_profile
                     )
     
-                    if result == "ratelimit":
+                    if result == "needs_auth":
+                        thread_safe_print(err("Authentication required — scan aborted."))
+                        thread_safe_print(warn("Re-run with --auth-user/--auth-pass or --starttls."))
+                        # Mark all done so progress_monitor stops immediately
+                        with progress_lock:
+                            progress_state["done"] = total
+                        try:
+                            while True: user_queue.get_nowait()
+                        except Exception:
+                            pass
+                        break
+
+                    elif result == "ratelimit":
                         with retry_lock:
                             retry_tracker[idx] = retry_tracker.get(idx, 0) + 1
                             retries = retry_tracker[idx]
@@ -3117,8 +3248,12 @@ def main():
     potential_count = progress_state["potential"]
     
     # ── Summary ────────────────────────────────────────────────────────────────
-    clear_checkpoint()
-    print("\n" + ok("Scan complete."))
+    _scan_done = progress_state["done"] >= total
+    if _scan_done:
+        clear_checkpoint()
+    else:
+        print(warn("Scan did not complete all users — checkpoint preserved for --resume."))
+    print("\n" + ok("Scan complete." if _scan_done else "Scan stopped early."))
     total_time = time.time() - progress_state["start_time"]
     minutes = int(total_time // 60)
     seconds = total_time % 60
