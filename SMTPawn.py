@@ -2356,9 +2356,18 @@ def session_setup_fresh(args, cli):
     domain = ehlo_domain
 
     # ── Phase 2: Target domain for RCPT TO / MAIL FROM ────────────────────────
+    # Priority: -d flag > @domain embedded in -u > --rcpt-domain > banner/interactive
+    _email_domain = None
+    if args.user and "@" in args.user:
+        _email_domain = args.user.split("@", 1)[1].strip()
+
     if args.domain_target:
         target_domain = args.domain_target
         print(info(f"Target domain: {CYAN}{target_domain}{RESET} (from -d)"))
+        rcpt_domain_preset = target_domain
+    elif _email_domain:
+        target_domain = _email_domain
+        print(info(f"Target domain: {CYAN}{target_domain}{RESET} (from -u email address)"))
         rcpt_domain_preset = target_domain
     else:
         banner_fqdn = extract_domain_from_banner(fp_banner)
